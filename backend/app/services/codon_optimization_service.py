@@ -13,6 +13,7 @@ from dnachisel import (
 )
 
 from app.services.organism_service import get_codon_table
+from app.utils.codon_tables import calculate_cai
 from app.utils.sequence import gc_content, reverse_translate
 
 
@@ -70,12 +71,14 @@ def optimize_sequence(
     gc_before = gc_content(initial_dna)
     gc_after = gc_content(optimized_dna)
 
+    cai_before = round(calculate_cai(initial_dna, codon_table.table), 4)
+    cai_after = round(calculate_cai(optimized_dna, codon_table.table), 4)
+
     return {
         "initial_sequence": initial_dna,
         "optimized_sequence": optimized_dna,
         "gc_content_before": gc_before,
         "gc_content_after": gc_after,
-        # TODO: calculate CAI before/after
-        "cai_before": None,
-        "cai_after": None,
+        "cai_before": cai_before,
+        "cai_after": cai_after,
     }

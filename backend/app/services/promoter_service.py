@@ -1,5 +1,7 @@
 """Promoter search and selection service. Queries EPD and JASPAR."""
 
+from fastapi import HTTPException
+
 from app.clients.epd_client import epd_client
 from app.schemas.regulatory import PromoterInfo, PromoterSearchResult
 
@@ -51,8 +53,18 @@ async def search_promoters(
     # Try EPD first
     try:
         epd_data = await epd_client.search_promoters(organism, gene=gene, limit=limit)
-        # TODO: parse EPD response into PromoterInfo objects
-        _ = epd_data
+        for entry in epd_data.get("results", []):
+            promoters.append(
+                PromoterInfo(
+                    id=entry.get("id", ""),
+                    name=entry.get("gene", ""),
+                    organism=entry.get("organism", organism),
+                    sequence=entry.get("sequence", ""),
+                    length=len(entry.get("sequence", "")),
+                    description=entry.get("description"),
+                    strength=None,
+                )
+            )
     except Exception:
         pass
 
@@ -66,5 +78,25 @@ async def search_promoters(
 
 async def get_promoter(promoter_id: str) -> PromoterInfo:
     """Fetch a specific promoter by ID."""
-    # TODO: implement
-    raise NotImplementedError
+    # Check synthetic promoters first
+    for _category, synth_list in SYNTHETIC_PROMOTERS.items():
+        for promoter in synth_list:
+            if promoter.id == promoter_id:
+                return promoter
+
+    # Try EPD
+    try:
+        epd_data = await epd_client.get_promoter_sequence(promoter_id)
+        return PromoterInfo(
+            id=promoter_id,
+            name=epd_data.get("gene", promoter_id),
+            organism=epd_data.get("organism", ""),
+            sequence=epd_data.get("sequence", ""),
+            length=len(epd_data.get("sequence", "")),
+            description=epd_data.get("description"),
+            strength=None,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Promoter {promoter_id} not found"
+        ) from exc

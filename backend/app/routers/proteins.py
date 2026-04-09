@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
-from app.schemas.protein import ProteinSearchResult
+from app.dependencies import get_cache
+from app.schemas.protein import ProteinDetail, ProteinSearchResult, ProteinSequence
 from app.services import protein_service
+from app.services.cache_service import CacheService
 
 router = APIRouter()
 
@@ -15,11 +17,11 @@ async def search_proteins(
     return await protein_service.search_proteins(q, organism=organism, limit=limit)
 
 
-@router.get("/{accession}")
-async def get_protein(accession: str):
-    return await protein_service.get_protein(accession)
+@router.get("/{accession}", response_model=ProteinDetail)
+async def get_protein(accession: str, cache: CacheService = Depends(get_cache)):
+    return await protein_service.get_protein(accession, cache=cache)
 
 
-@router.get("/{accession}/sequence")
-async def get_protein_sequence(accession: str):
-    return await protein_service.get_protein_sequence(accession)
+@router.get("/{accession}/sequence", response_model=ProteinSequence)
+async def get_protein_sequence(accession: str, cache: CacheService = Depends(get_cache)):
+    return await protein_service.get_protein_sequence(accession, cache=cache)

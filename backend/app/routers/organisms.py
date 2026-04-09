@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
-from app.schemas.organism import CodonTableResponse, OrganismSearchResult
+from app.dependencies import get_cache
+from app.schemas.organism import CodonTableResponse, OrganismDetail, OrganismSearchResult
 from app.services import organism_service
+from app.services.cache_service import CacheService
 
 router = APIRouter()
 
@@ -14,9 +16,9 @@ async def search_organisms(
     return await organism_service.search_organisms(q, limit=limit)
 
 
-@router.get("/{tax_id}")
-async def get_organism(tax_id: int):
-    return await organism_service.get_organism(tax_id)
+@router.get("/{tax_id}", response_model=OrganismDetail)
+async def get_organism(tax_id: int, cache: CacheService = Depends(get_cache)):
+    return await organism_service.get_organism(tax_id, cache=cache)
 
 
 @router.get("/{tax_id}/codon-table", response_model=CodonTableResponse)

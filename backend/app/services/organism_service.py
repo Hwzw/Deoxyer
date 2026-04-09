@@ -1,9 +1,13 @@
 """Organism search and codon table retrieval."""
 
+from __future__ import annotations
+
 import python_codon_tables as pct
+from fastapi import HTTPException
 
 from app.clients import ncbi_client
 from app.schemas.organism import CodonTableResponse, OrganismDetail, OrganismSearchResult
+from app.services.cache_service import CacheService, TTL_ORGANISM
 
 
 async def search_organisms(query: str, limit: int = 20) -> list[OrganismSearchResult]:
@@ -26,10 +30,40 @@ async def search_organisms(query: str, limit: int = 20) -> list[OrganismSearchRe
     return organisms
 
 
-async def get_organism(tax_id: int) -> OrganismDetail:
+async def get_organism(
+    tax_id: int, cache: CacheService | None = None
+) -> OrganismDetail:
     """Fetch organism details from NCBI Taxonomy."""
-    # TODO: implement with caching
-    raise NotImplementedError
+    cache_key = CacheService.make_key("organism", str(tax_id))
+    if cache:
+        try:
+            cached = await cache.get_cached(cache_key)
+            if cached:
+                return OrganismDetail(**cached)
+        except Exception:
+            pass
+
+    detail = await ncbi_client.fetch_taxonomy(str(tax_id))
+    if not detail:
+        raise HTTPException(status_code=404, detail=f"Organism with tax_id {tax_id} not found")
+
+    taxon = detail[0] if isinstance(detail, list) else detail
+
+    result = OrganismDetail(
+        tax_id=int(tax_id),
+        scientific_name=taxon.get("ScientificName", ""),
+        common_name=taxon.get("CommonName") or None,
+        lineage=taxon.get("Lineage") or None,
+        gc_content=None,
+    )
+
+    if cache:
+        try:
+            await cache.set_cached(cache_key, result.model_dump(mode="json"), ttl=TTL_ORGANISM)
+        except Exception:
+            pass
+
+    return result
 
 
 def get_codon_table(tax_id: int) -> CodonTableResponse:

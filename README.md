@@ -1,6 +1,6 @@
 # GenBit
 
-Synthetic biology construct designer for heterologous protein expression. Design genetic sequences with codon optimization, Kozak sequences, promoter selection, and construct assembly — all in one workspace.
+Synthetic biology construct designer for heterologous protein expression. Design genetic sequences with codon optimization, Kozak sequences, promoter selection, and construct assembly — all from a text-based terminal interface.
 
 ## Features
 
@@ -9,14 +9,14 @@ Synthetic biology construct designer for heterologous protein expression. Design
 - **Codon Optimization** — Frequency-based, harmonized, or balanced optimization via DNAchisel with GC content and restriction site constraints
 - **Kozak Sequence Generation** — Species-specific translation initiation contexts (vertebrate, yeast, plant, Drosophila, E. coli)
 - **Promoter Selection** — Browse synthetic promoters (CMV, EF1a, GAL1, CaMV 35S, etc.) and search the Eukaryotic Promoter Database
-- **Construct Assembly** — Drag-and-drop builder for ordering promoter → Kozak → CDS → terminator with validation and linear map preview
+- **Construct Assembly** — Build constructs from promoter → Kozak → CDS → terminator with validation and assembly
 - **Project Management** — Save, organize, and revisit construct designs
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Next.js 15, React 19, TypeScript, Tailwind CSS, Zustand, React Query |
+| Frontend | Single-file terminal UI (HTML/JS, zero dependencies) |
 | Backend | Python 3.12, FastAPI, SQLAlchemy (async), Pydantic |
 | Bioinformatics | Biopython, DNAchisel, python-codon-tables |
 | Database | PostgreSQL 16, Redis 7 |
@@ -26,29 +26,24 @@ Synthetic biology construct designer for heterologous protein expression. Design
 
 ```
 GenBit/
-├── frontend/          Next.js app
-│   └── src/
-│       ├── app/           Pages (landing, designer, projects)
-│       ├── components/    UI components by domain
-│       ├── lib/api/       Typed API client layer
-│       ├── hooks/         React Query hooks
-│       ├── store/         Zustand state management
-│       ├── types/         TypeScript interfaces
-│       └── utils/         Sequence helpers, validation
+├── frontend/
+│   └── public/
+│       └── terminal.html    Single-file terminal UI (served at /)
 │
-├── backend/           FastAPI app
+├── backend/
 │   ├── app/
-│   │   ├── routers/       API endpoints
-│   │   ├── services/      Business logic (codon optimization, Kozak, assembly)
-│   │   ├── clients/       External API wrappers (NCBI, UniProt, Ensembl)
-│   │   ├── models/        SQLAlchemy ORM models
-│   │   ├── schemas/       Pydantic request/response schemas
-│   │   ├── utils/         Sequence tools, CAI calculation, FASTA parsing
-│   │   └── db/            Database engine and session
-│   ├── alembic/           Database migrations
-│   └── tests/             Pytest test suite
+│   │   ├── main.py           FastAPI app (serves terminal + API)
+│   │   ├── routers/          API endpoints
+│   │   ├── services/         Business logic
+│   │   ├── clients/          External API wrappers (NCBI, UniProt, etc.)
+│   │   ├── models/           SQLAlchemy ORM models
+│   │   ├── schemas/          Pydantic request/response schemas
+│   │   ├── utils/            Sequence tools, CAI calculation, FASTA parsing
+│   │   └── db/               Database engine and session
+│   ├── alembic/              Database migrations
+│   └── tests/                Pytest test suite
 │
-└── docker-compose.yml PostgreSQL + Redis
+└── docker-compose.yml        PostgreSQL + Redis (optional)
 ```
 
 ## Getting Started
@@ -56,8 +51,16 @@ GenBit/
 ### Prerequisites
 
 - Python 3.11+
-- Node.js 18+
-- Docker & Docker Compose
+- PostgreSQL 16+
+- Redis 7+
+
+Install with Homebrew (macOS):
+
+```bash
+brew install postgresql@16 redis
+brew services start postgresql@16
+brew services start redis
+```
 
 ### Setup
 
@@ -66,38 +69,36 @@ GenBit/
 git clone https://github.com/Hwzw/GenBit.git
 cd GenBit
 
-# 2. Start PostgreSQL and Redis
-docker compose up -d
+# 2. Create PostgreSQL user and database
+createuser genbit -P          # set a password when prompted
+createdb -O genbit genbit
+psql -U $(whoami) -d genbit -c "GRANT ALL ON SCHEMA public TO genbit;"
 
 # 3. Set up the backend
 cd backend
-cp .env.example .env          # edit with your NCBI API key
+cp .env.example .env          # edit with your credentials (see below)
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-alembic upgrade head           # run database migrations
+alembic upgrade head          # run database migrations
 
-# 4. Set up the frontend
-cd ../frontend
-cp .env.local.example .env.local
-npm install
-
-# 5. Start development servers (in separate terminals)
-make dev-backend               # http://localhost:8000
-make dev-frontend              # http://localhost:3000
+# 4. Start the server
+make run                       # http://localhost:8000
 ```
+
+Open **http://localhost:8000** in your browser. Type `help` to see all commands.
 
 ### Environment Variables
 
-Copy `.env.example` and fill in:
+Copy `backend/.env.example` to `backend/.env` and fill in:
 
 | Variable | Description |
 |----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `REDIS_URL` | Redis connection string |
+| `DATABASE_URL` | PostgreSQL connection string (update password to match your `createuser` step) |
+| `REDIS_URL` | Redis connection string (default `redis://localhost:6379/0` is fine) |
 | `NCBI_API_KEY` | [NCBI API key](https://www.ncbi.nlm.nih.gov/account/settings/) — raises rate limit from 3 to 10 req/sec |
 | `NCBI_EMAIL` | Required by NCBI Entrez API |
-| `SECRET_KEY` | Application secret |
+| `SECRET_KEY` | Application secret (any random string) |
 
 ### Running Tests
 
@@ -106,23 +107,32 @@ cd backend
 python -m pytest
 ```
 
-## API Overview
+## Terminal Commands
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /health` | Health check (DB + Redis) |
-| `GET /api/genes/search?q=` | Search NCBI Gene |
-| `GET /api/proteins/search?q=` | Search UniProt + NCBI Protein |
-| `GET /api/organisms/search?q=` | Search NCBI Taxonomy |
-| `GET /api/organisms/{tax_id}/codon-table` | Codon usage frequencies |
-| `POST /api/optimization/optimize` | Run codon optimization |
-| `POST /api/regulatory/kozak` | Generate Kozak sequence |
-| `GET /api/regulatory/promoters/search` | Search promoters |
-| `POST /api/constructs` | Create a construct |
-| `POST /api/constructs/{id}/assemble` | Assemble full sequence |
-| `GET/POST /api/projects` | Project CRUD |
+| Command | Description |
+|---------|-------------|
+| `health` | Check API + database + Redis status |
+| `gene search <query> [--organism=X]` | Search NCBI Gene |
+| `gene get <id>` | Get gene details |
+| `gene sequence <id> [--type=cds]` | Get gene sequence |
+| `protein search <query> [--organism=X]` | Search UniProt + NCBI Protein |
+| `protein get <accession>` | Get protein details |
+| `protein sequence <accession>` | Get protein sequence |
+| `organism search <query>` | Search NCBI Taxonomy |
+| `organism get <tax_id>` | Get organism details |
+| `organism codons <tax_id>` | Get codon usage table |
+| `optimize <seq> --organism=<tax_id>` | Run codon optimization |
+| `kozak <tax_id>` | Generate Kozak sequence |
+| `promoter search <organism>` | Search promoters |
+| `project list` | List all projects |
+| `project create <name>` | Create a new project |
+| `construct create <name> --project=<id>` | Create a construct |
+| `construct assemble <id>` | Assemble full sequence |
+| `help` | Show all commands with full flag options |
 
-Full interactive docs available at `http://localhost:8000/docs` when the backend is running.
+## API Docs
+
+Interactive Swagger docs at **http://localhost:8000/docs** when the backend is running.
 
 ## License
 

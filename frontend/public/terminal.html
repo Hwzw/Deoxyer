@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GenBit Terminal</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
+      font-size: 14px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    #terminal {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+      padding-bottom: 0;
+    }
+    .line { white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; }
+    .line.error { color: #f85149; }
+    .line.success { color: #3fb950; }
+    .line.info { color: #58a6ff; }
+    .line.dim { color: #6e7681; }
+    .line.bold { color: #f0f6fc; font-weight: bold; }
+    .line.warn { color: #d29922; }
+    #input-area {
+      display: flex;
+      align-items: center;
+      padding: 8px 16px 16px;
+      gap: 8px;
+    }
+    #input-area .prompt { color: #3fb950; font-weight: bold; white-space: nowrap; }
+    #input-area input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #c9d1d9;
+      font-family: inherit;
+      font-size: inherit;
+      caret-color: #3fb950;
+    }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <div id="input-area">
+    <span class="prompt">genbit&gt;</span>
+    <input type="text" id="cmd" autofocus autocomplete="off" spellcheck="false">
+  </div>
+
+  <script>
+    const state = {
+      baseUrl: 'http://localhost:8000',
+      history: [],
+      historyIndex: -1,
+    };
+
+    const termEl = document.getElementById('terminal');
+    const cmdEl = document.getElementById('cmd');
+
+    // ── Output helpers ──────────────────────────────────────────────
+    function print(text, cls = '') {
+      const div = document.createElement('div');
+      div.className = 'line' + (cls ? ' ' + cls : '');
+      div.textContent = text;
+      termEl.appendChild(div);
+      termEl.scrollTop = termEl.scrollHeight;
+    }
+
+    function printJson(obj) {
+      print(JSON.stringify(obj, null, 2));
+    }
+
+    function printTable(rows, columns) {
+      if (!rows || rows.length === 0) { print('No results.', 'dim'); return; }
+      const widths = {};
+      columns.forEach(c => widths[c] = c.length);
+      rows.forEach(r => columns.forEach(c => {
+        const val = String(r[c] ?? '');
+        if (val.length > widths[c]) widths[c] = Math.min(val.length, 60);
+      }));
+      const header = columns.map(c => c.padEnd(widths[c])).join('  ');
+      const sep = columns.map(c => '─'.repeat(widths[c])).join('──');
+      print(header, 'bold');
+      print(sep, 'dim');
+      rows.forEach(r => {
+        const line = columns.map(c => String(r[c] ?? '').substring(0, 60).padEnd(widths[c])).join('  ');
+        print(line);
+      });
+    }
+
+    function printSeq(seq, label) {
+      if (label) print(label + ':', 'info');
+      for (let i = 0; i < seq.length; i += 80) {
+        print(seq.substring(i, i + 80));
+      }
+    }
+
+    // ── API helper ──────────────────────────────────────────────────
+    async function api(method, path, body) {
+      const url = state.baseUrl + path;
+      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body) opts.body = JSON.stringify(body);
+      try {
+        const res = await fetch(url, opts);
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          const detail = data?.detail || `HTTP ${res.status}`;
+          throw new Error(detail);
+        }
+        return data;
+      } catch (e) {
+        if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
+          throw new Error(`Connection failed. Is the backend running at ${state.baseUrl}?`);
+        }
+        throw e;
+      }
+    }
+
+    // ── Command parser ──────────────────────────────────────────────
+    function parseCommand(input) {
+      const tokens = [];
+      let current = '';
+      let inQuote = false;
+      let quoteChar = '';
+      for (const ch of input) {
+        if (inQuote) {
+          if (ch === quoteChar) { inQuote = false; } else { current += ch; }
+        } else if (ch === '"' || ch === "'") {
+          inQuote = true; quoteChar = ch;
+        } else if (ch === ' ') {
+          if (current) { tokens.push(current); current = ''; }
+        } else {
+          current += ch;
+        }
+      }
+      if (current) tokens.push(current);
+
+      const args = [];
+      const flags = {};
+      for (const t of tokens) {
+        if (t.startsWith('--')) {
+          const eq = t.indexOf('=');
+          if (eq > -1) {
+            flags[t.substring(2, eq)] = t.substring(eq + 1);
+          } else {
+            flags[t.substring(2)] = true;
+          }
+        } else {
+          args.push(t);
+        }
+      }
+      return { args, flags };
+    }
+
+    // ── Command handlers ────────────────────────────────────────────
+
+    async function handleHelp(args) {
+      const topic = args[0];
+      const sections = {
+        gene: [
+          'gene search <query> [--organism=X]     Search NCBI Gene',
+          'gene get <id>                           Get gene details',
+          'gene sequence <id> [--type=cds|mrna]    Get gene sequence',
+        ],
+        protein: [
+          'protein search <query> [--organism=X]   Search UniProt/NCBI',
+          'protein get <accession>                 Get protein details',
+          'protein sequence <accession>            Get protein sequence',
+        ],
+        organism: [
+          'organism search <query>                 Search NCBI Taxonomy',
+          'organism get <tax_id>                   Get organism details',
+          'organism codons <tax_id>                Get codon usage table',
+        ],
+        optimize: [
+          'optimize <protein_seq> --organism=<tax_id>',
+          '  [--strategy=frequency|harmonized|balanced]',
+          '  [--gc-min=0.4] [--gc-max=0.6]',
+          '  [--avoid=EcoRI,BamHI] [--no-repeats]',
+        ],
+        kozak: [
+          'kozak <tax_id> [--start=ATG]            Generate Kozak sequence',
+        ],
+        promoter: [
+          'promoter search <organism> [--gene=X]   Search promoters',
+          'promoter get <id>                       Get promoter details',
+        ],
+        project: [
+          'project list                            List all projects',
+          'project create <name> [--desc=X]        Create project',
+          'project get <id>                        Get project details',
+          'project update <id> [--name=X] [--desc=X]',
+          'project delete <id>                     Delete project',
+        ],
+        construct: [
+          'construct create <name> --project=<id> [--organism=<tax_id>]',
+          'construct get <id>                      Get construct',
+          'construct update <id> [--name=X] [--organism=X] [--elements=<json>]',
+          'construct delete <id>                   Delete construct',
+          'construct assemble <id>                 Assemble full sequence',
+        ],
+      };
+
+      if (topic && sections[topic]) {
+        sections[topic].forEach(l => print(l));
+        return;
+      }
+
+      print('GenBit Terminal — Synthetic Biology Construct Designer', 'bold');
+      print('');
+      print('Commands:', 'info');
+      print('  health                     Check API status');
+      Object.keys(sections).forEach(k => {
+        print('');
+        print('  ' + k + ':', 'info');
+        sections[k].forEach(l => print('    ' + l));
+      });
+      print('');
+      print('Utility:', 'info');
+      print('  clear                      Clear terminal');
+      print('  history                    Show command history');
+      print('  set base-url <url>         Change backend URL');
+      print('  help [command]             Show help');
+    }
+
+    async function handleHealth() {
+      const data = await api('GET', '/health');
+      print(`Status:   ${data.status}`, data.status === 'ok' ? 'success' : 'warn');
+      print(`Database: ${data.database}`, data.database === 'ok' ? 'success' : 'error');
+      print(`Redis:    ${data.redis}`, data.redis === 'ok' ? 'success' : 'error');
+    }
+
+    async function handleGene(args, flags) {
+      const verb = args[0];
+      if (verb === 'search') {
+        const q = args.slice(1).join(' ');
+        if (!q) { print('Usage: gene search <query> [--organism=X]', 'warn'); return; }
+        let path = `/api/genes/search?q=${encodeURIComponent(q)}`;
+        if (flags.organism) path += `&organism=${encodeURIComponent(flags.organism)}`;
+        const data = await api('GET', path);
+        printTable(data, ['gene_id', 'symbol', 'description', 'organism']);
+      } else if (verb === 'get') {
+        if (!args[1]) { print('Usage: gene get <gene_id>', 'warn'); return; }
+        const data = await api('GET', `/api/genes/${args[1]}`);
+        printJson(data);
+      } else if (verb === 'sequence') {
+        if (!args[1]) { print('Usage: gene sequence <gene_id> [--type=cds]', 'warn'); return; }
+        let path = `/api/genes/${args[1]}/sequence`;
+        if (flags.type) path += `?seq_type=${flags.type}`;
+        const data = await api('GET', path);
+        print(`Gene: ${data.gene_id}  Accession: ${data.accession}  Length: ${data.length}  Type: ${data.sequence_type}`, 'info');
+        printSeq(data.sequence);
+      } else {
+        print('Usage: gene search|get|sequence ...', 'warn');
+      }
+    }
+
+    async function handleProtein(args, flags) {
+      const verb = args[0];
+      if (verb === 'search') {
+        const q = args.slice(1).join(' ');
+        if (!q) { print('Usage: protein search <query> [--organism=X]', 'warn'); return; }
+        let path = `/api/proteins/search?q=${encodeURIComponent(q)}`;
+        if (flags.organism) path += `&organism=${encodeURIComponent(flags.organism)}`;
+        const data = await api('GET', path);
+        printTable(data, ['accession', 'name', 'organism', 'length', 'source']);
+      } else if (verb === 'get') {
+        if (!args[1]) { print('Usage: protein get <accession>', 'warn'); return; }
+        const data = await api('GET', `/api/proteins/${args[1]}`);
+        printJson(data);
+      } else if (verb === 'sequence') {
+        if (!args[1]) { print('Usage: protein sequence <accession>', 'warn'); return; }
+        const data = await api('GET', `/api/proteins/${args[1]}/sequence`);
+        print(`Accession: ${data.accession}  Length: ${data.length}  Source: ${data.source}`, 'info');
+        printSeq(data.sequence);
+      } else {
+        print('Usage: protein search|get|sequence ...', 'warn');
+      }
+    }
+
+    async function handleOrganism(args, flags) {
+      const verb = args[0];
+      if (verb === 'search') {
+        const q = args.slice(1).join(' ');
+        if (!q) { print('Usage: organism search <query>', 'warn'); return; }
+        const data = await api('GET', `/api/organisms/search?q=${encodeURIComponent(q)}`);
+        printTable(data, ['tax_id', 'scientific_name', 'common_name']);
+      } else if (verb === 'get') {
+        if (!args[1]) { print('Usage: organism get <tax_id>', 'warn'); return; }
+        const data = await api('GET', `/api/organisms/${args[1]}`);
+        printJson(data);
+      } else if (verb === 'codons') {
+        if (!args[1]) { print('Usage: organism codons <tax_id>', 'warn'); return; }
+        const data = await api('GET', `/api/organisms/${args[1]}/codon-table`);
+        print(`Organism tax_id: ${data.organism_tax_id}  Source: ${data.source}`, 'info');
+        print('');
+        for (const [aa, codons] of Object.entries(data.table)) {
+          const codonStr = Object.entries(codons).map(([c, f]) => `${c}: ${Number(f).toFixed(3)}`).join('  ');
+          print(`  ${aa.padEnd(4)} ${codonStr}`);
+        }
+      } else {
+        print('Usage: organism search|get|codons ...', 'warn');
+      }
+    }
+
+    async function handleOptimize(args, flags) {
+      const seq = args[0];
+      if (!seq || !flags.organism) {
+        print('Usage: optimize <protein_seq> --organism=<tax_id> [--strategy=frequency]', 'warn');
+        return;
+      }
+      const body = {
+        sequence: seq,
+        organism_tax_id: parseInt(flags.organism),
+        strategy: flags.strategy || 'frequency',
+        avoid_restriction_sites: flags.avoid ? flags.avoid.split(',') : [],
+        avoid_repeats: flags['no-repeats'] !== undefined ? false : true,
+      };
+      if (flags['gc-min']) body.target_gc_min = parseFloat(flags['gc-min']);
+      if (flags['gc-max']) body.target_gc_max = parseFloat(flags['gc-max']);
+
+      print('Optimizing...', 'dim');
+      const data = await api('POST', '/api/optimization/optimize', body);
+      print(`Job ID:   ${data.job_id}`, 'info');
+      print(`Status:   ${data.status}`, 'success');
+      if (data.cai_before != null) print(`CAI:      ${data.cai_before} → ${data.cai_after}`);
+      if (data.gc_content != null) print(`GC:       ${(data.gc_content * 100).toFixed(1)}%`);
+      if (data.optimized_sequence) {
+        print('');
+        printSeq(data.optimized_sequence, 'Optimized sequence');
+      }
+    }
+
+    async function handleKozak(args, flags) {
+      const taxId = args[0];
+      if (!taxId) { print('Usage: kozak <tax_id> [--start=ATG]', 'warn'); return; }
+      const body = {
+        organism_tax_id: parseInt(taxId),
+        start_codon: flags.start || 'ATG',
+      };
+      const data = await api('POST', '/api/regulatory/kozak', body);
+      print(`Organism:  ${data.organism}`, 'info');
+      print(`Consensus: ${data.consensus}`);
+      print(`Sequence:  ${data.sequence}`, 'success');
+      if (data.notes) print(`Notes:     ${data.notes}`, 'dim');
+    }
+
+    async function handlePromoter(args, flags) {
+      const verb = args[0];
+      if (verb === 'search') {
+        const org = args.slice(1).join(' ');
+        if (!org) { print('Usage: promoter search <organism> [--gene=X]', 'warn'); return; }
+        let path = `/api/regulatory/promoters/search?organism=${encodeURIComponent(org)}`;
+        if (flags.gene) path += `&gene=${encodeURIComponent(flags.gene)}`;
+        const data = await api('GET', path);
+        print(`Found ${data.total} promoter(s)`, 'info');
+        printTable(data.promoters, ['id', 'name', 'organism', 'strength', 'description']);
+      } else if (verb === 'get') {
+        if (!args[1]) { print('Usage: promoter get <promoter_id>', 'warn'); return; }
+        const data = await api('GET', `/api/regulatory/promoters/${args[1]}`);
+        printJson(data);
+      } else {
+        print('Usage: promoter search|get ...', 'warn');
+      }
+    }
+
+    async function handleProject(args, flags) {
+      const verb = args[0];
+      if (verb === 'list') {
+        const data = await api('GET', '/api/projects/');
+        printTable(data, ['id', 'name', 'description', 'created_at']);
+      } else if (verb === 'create') {
+        const name = args.slice(1).join(' ');
+        if (!name) { print('Usage: project create <name> [--desc=X]', 'warn'); return; }
+        const body = { name, description: flags.desc || null };
+        const data = await api('POST', '/api/projects/', body);
+        print(`Created project: ${data.id}`, 'success');
+        printJson(data);
+      } else if (verb === 'get') {
+        if (!args[1]) { print('Usage: project get <id>', 'warn'); return; }
+        const data = await api('GET', `/api/projects/${args[1]}`);
+        printJson(data);
+      } else if (verb === 'update') {
+        if (!args[1]) { print('Usage: project update <id> [--name=X] [--desc=X]', 'warn'); return; }
+        const body = {};
+        if (flags.name) body.name = flags.name;
+        if (flags.desc) body.description = flags.desc;
+        const data = await api('PUT', `/api/projects/${args[1]}`, body);
+        print('Updated.', 'success');
+        printJson(data);
+      } else if (verb === 'delete') {
+        if (!args[1]) { print('Usage: project delete <id>', 'warn'); return; }
+        await api('DELETE', `/api/projects/${args[1]}`);
+        print('Deleted.', 'success');
+      } else {
+        print('Usage: project list|create|get|update|delete ...', 'warn');
+      }
+    }
+
+    async function handleConstruct(args, flags) {
+      const verb = args[0];
+      if (verb === 'create') {
+        const name = args.slice(1).join(' ');
+        if (!name || !flags.project) {
+          print('Usage: construct create <name> --project=<id> [--organism=<tax_id>]', 'warn');
+          return;
+        }
+        const body = {
+          project_id: flags.project,
+          name: name,
+          organism_tax_id: flags.organism ? parseInt(flags.organism) : null,
+          elements: flags.elements ? JSON.parse(flags.elements) : [],
+        };
+        const data = await api('POST', '/api/constructs/', body);
+        print(`Created construct: ${data.id}`, 'success');
+        printJson(data);
+      } else if (verb === 'get') {
+        if (!args[1]) { print('Usage: construct get <id>', 'warn'); return; }
+        const data = await api('GET', `/api/constructs/${args[1]}`);
+        printJson(data);
+      } else if (verb === 'update') {
+        if (!args[1]) { print('Usage: construct update <id> [--name=X] [--organism=X] [--elements=<json>]', 'warn'); return; }
+        const body = {};
+        if (flags.name) body.name = flags.name;
+        if (flags.organism) body.organism_tax_id = parseInt(flags.organism);
+        if (flags.elements) body.elements = JSON.parse(flags.elements);
+        const data = await api('PUT', `/api/constructs/${args[1]}`, body);
+        print('Updated.', 'success');
+        printJson(data);
+      } else if (verb === 'delete') {
+        if (!args[1]) { print('Usage: construct delete <id>', 'warn'); return; }
+        await api('DELETE', `/api/constructs/${args[1]}`);
+        print('Deleted.', 'success');
+      } else if (verb === 'assemble') {
+        if (!args[1]) { print('Usage: construct assemble <id>', 'warn'); return; }
+        const data = await api('POST', `/api/constructs/${args[1]}/assemble`);
+        if (data.full_sequence) {
+          print(`Total length: ${data.full_sequence.length} bp`, 'info');
+          printSeq(data.full_sequence, 'Assembled sequence');
+        }
+        if (data.warnings && data.warnings.length) {
+          print('');
+          data.warnings.forEach(w => print('Warning: ' + w, 'warn'));
+        }
+        if (data.annotations && data.annotations.length) {
+          print('');
+          print('Annotations:', 'info');
+          printTable(data.annotations, ['label', 'type', 'start', 'end']);
+        }
+      } else {
+        print('Usage: construct create|get|update|delete|assemble ...', 'warn');
+      }
+    }
+
+    // ── Command dispatch ────────────────────────────────────────────
+    const commands = {
+      help: (a, f) => handleHelp(a),
+      health: () => handleHealth(),
+      gene: handleGene,
+      protein: handleProtein,
+      organism: handleOrganism,
+      optimize: handleOptimize,
+      kozak: handleKozak,
+      promoter: handlePromoter,
+      project: handleProject,
+      construct: handleConstruct,
+      clear: () => { termEl.innerHTML = ''; },
+      history: () => { state.history.forEach((h, i) => print(`  ${i + 1}  ${h}`)); },
+      set: (args) => {
+        if (args[0] === 'base-url' && args[1]) {
+          state.baseUrl = args[1];
+          print(`Backend URL set to ${state.baseUrl}`, 'success');
+        } else {
+          print('Usage: set base-url <url>', 'warn');
+        }
+      },
+    };
+
+    async function runCommand(input) {
+      const trimmed = input.trim();
+      if (!trimmed) return;
+
+      state.history.push(trimmed);
+      state.historyIndex = state.history.length;
+
+      print(`genbit> ${trimmed}`, 'dim');
+
+      const { args, flags } = parseCommand(trimmed);
+      if (args.length === 0) return;
+
+      const cmd = args[0].toLowerCase();
+      const handler = commands[cmd];
+
+      if (!handler) {
+        print(`Unknown command: ${cmd}. Type 'help' for available commands.`, 'error');
+        return;
+      }
+
+      try {
+        await handler(args.slice(1), flags);
+      } catch (e) {
+        print(`Error: ${e.message}`, 'error');
+      }
+      print('');
+    }
+
+    // ── Input handling ──────────────────────────────────────────────
+    cmdEl.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') {
+        const val = cmdEl.value;
+        cmdEl.value = '';
+        await runCommand(val);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (state.historyIndex > 0) {
+          state.historyIndex--;
+          cmdEl.value = state.history[state.historyIndex];
+        }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (state.historyIndex < state.history.length - 1) {
+          state.historyIndex++;
+          cmdEl.value = state.history[state.historyIndex];
+        } else {
+          state.historyIndex = state.history.length;
+          cmdEl.value = '';
+        }
+      }
+    });
+
+    // Focus input when clicking anywhere
+    document.body.addEventListener('click', () => cmdEl.focus());
+
+    // ── Startup banner ──────────────────────────────────────────────
+    print('╔══════════════════════════════════════════╗', 'info');
+    print('║          GenBit Terminal v0.1            ║', 'info');
+    print('║  Synthetic Biology Construct Designer    ║', 'info');
+    print('╚══════════════════════════════════════════╝', 'info');
+    print('');
+    print(`Backend: ${state.baseUrl}`, 'dim');
+    print("Type 'help' for available commands.", 'dim');
+    print('');
+  </script>
+</body>
+</html>

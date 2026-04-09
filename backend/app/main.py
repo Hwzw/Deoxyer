@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.routers import (
@@ -13,6 +16,8 @@ from app.routers import (
     regulatory,
 )
 
+TERMINAL_HTML = Path(__file__).resolve().parent.parent.parent / "frontend" / "public" / "terminal.html"
+
 
 def create_app() -> FastAPI:
     application = FastAPI(
@@ -23,7 +28,7 @@ def create_app() -> FastAPI:
 
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins_list,
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -39,6 +44,10 @@ def create_app() -> FastAPI:
     )
     application.include_router(regulatory.router, prefix="/api/regulatory", tags=["regulatory"])
     application.include_router(projects.router, prefix="/api/projects", tags=["projects"])
+
+    @application.get("/", include_in_schema=False)
+    async def serve_terminal():
+        return FileResponse(TERMINAL_HTML, media_type="text/html")
 
     return application
 

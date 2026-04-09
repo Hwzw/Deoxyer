@@ -72,5 +72,20 @@ async def fetch_nucleotide(accession: str, rettype: str = "fasta") -> dict:
     return await efetch(db="nucleotide", id=accession, rettype=rettype, retmode="text")
 
 
+async def fetch_nucleotide_text(accession: str, rettype: str = "fasta") -> str:
+    """Fetch nucleotide sequence as raw text (for FASTA parsing).
+
+    Unlike fetch_nucleotide, this does NOT pass through Entrez.read(),
+    which fails on plain-text formats like FASTA.
+    """
+    async with _semaphore:
+        loop = asyncio.get_event_loop()
+        handle = await loop.run_in_executor(
+            None, partial(Entrez.efetch, db="nucleotide", id=accession, rettype=rettype, retmode="text")
+        )
+        text = await loop.run_in_executor(None, handle.read)
+        return text
+
+
 async def fetch_taxonomy(tax_id: str) -> dict:
     return await efetch(db="taxonomy", id=tax_id)

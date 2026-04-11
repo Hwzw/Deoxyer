@@ -9,17 +9,24 @@ from app.models.project import Project
 from app.schemas.project import ProjectCreate, ProjectUpdate
 
 
-async def list_projects(db: AsyncSession) -> list[Project]:
-    result = await db.execute(select(Project).order_by(Project.updated_at.desc()))
+async def list_projects(db: AsyncSession, session_id: str) -> list[Project]:
+    result = await db.execute(
+        select(Project)
+        .where(Project.session_id == session_id)
+        .order_by(Project.updated_at.desc())
+    )
     return list(result.scalars().all())
 
 
-async def get_project(db: AsyncSession, project_id: uuid.UUID) -> Project | None:
-    return await db.get(Project, project_id)
+async def get_project(db: AsyncSession, project_id: uuid.UUID, session_id: str) -> Project | None:
+    project = await db.get(Project, project_id)
+    if project and project.session_id != session_id:
+        return None
+    return project
 
 
-async def create_project(db: AsyncSession, data: ProjectCreate) -> Project:
-    project = Project(name=data.name, description=data.description)
+async def create_project(db: AsyncSession, data: ProjectCreate, session_id: str) -> Project:
+    project = Project(name=data.name, description=data.description, session_id=session_id)
     db.add(project)
     await db.commit()
     await db.refresh(project)
@@ -27,10 +34,10 @@ async def create_project(db: AsyncSession, data: ProjectCreate) -> Project:
 
 
 async def update_project(
-    db: AsyncSession, project_id: uuid.UUID, data: ProjectUpdate
+    db: AsyncSession, project_id: uuid.UUID, data: ProjectUpdate, session_id: str
 ) -> Project | None:
     project = await db.get(Project, project_id)
-    if not project:
+    if not project or project.session_id != session_id:
         return None
     if data.name is not None:
         project.name = data.name
@@ -41,9 +48,9 @@ async def update_project(
     return project
 
 
-async def delete_project(db: AsyncSession, project_id: uuid.UUID) -> bool:
+async def delete_project(db: AsyncSession, project_id: uuid.UUID, session_id: str) -> bool:
     project = await db.get(Project, project_id)
-    if not project:
+    if not project or project.session_id != session_id:
         return False
     await db.delete(project)
     await db.commit()

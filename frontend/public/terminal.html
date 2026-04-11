@@ -55,10 +55,21 @@
   </div>
 
   <script>
+    function getSessionId() {
+      let sid = localStorage.getItem('genbit-session-id');
+      if (!sid) {
+        sid = crypto.randomUUID();
+        localStorage.setItem('genbit-session-id', sid);
+      }
+      return sid;
+    }
+
     const state = {
       baseUrl: 'http://localhost:8000',
       history: [],
       historyIndex: -1,
+      workspace: {},
+      sessionId: getSessionId(),
     };
 
     const termEl = document.getElementById('terminal');
@@ -76,6 +87,7 @@
     function printJson(obj) {
       print(JSON.stringify(obj, null, 2));
     }
+
 
     function printTable(rows, columns) {
       if (!rows || rows.length === 0) { print('No results.', 'dim'); return; }
@@ -102,16 +114,30 @@
       }
     }
 
+    // ── Workspace helpers ───────────────────────────────────────────
+    function wsStore(name, obj) {
+      state.workspace[name] = obj;
+    }
+
+    function wsGet(name) {
+      return state.workspace[name] || null;
+    }
+
+    function wsUnit(type) {
+      return (type === 'protein') ? 'aa' : 'bp';
+    }
+
     // ── API helper ──────────────────────────────────────────────────
     async function api(method, path, body) {
       const url = state.baseUrl + path;
-      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      const opts = { method, headers: { 'Content-Type': 'application/json', 'X-Session-ID': state.sessionId } };
       if (body) opts.body = JSON.stringify(body);
       try {
         const res = await fetch(url, opts);
         const data = await res.json().catch(() => null);
         if (!res.ok) {
-          const detail = data?.detail || `HTTP ${res.status}`;
+          const raw = data?.detail || `HTTP ${res.status}`;
+          const detail = typeof raw === 'string' ? raw : JSON.stringify(raw);
           throw new Error(detail);
         }
         return data;
@@ -165,46 +191,66 @@
       const topic = args[0];
       const sections = {
         gene: [
-          'gene search <query> [--organism=X]     Search NCBI Gene',
-          'gene get <id>                           Get gene details',
-          'gene sequence <id> [--type=cds|mrna]    Get gene sequence',
+          'gene search <query> [--organism=X]       Search NCBI Gene',
+          'gene get <id>                             Get gene details',
+          'gene sequence <id> [--type=cds|mrna]      Fetch & save to workspace',
+          '  [--name=X] [--seq]',
         ],
         protein: [
-          'protein search <query> [--organism=X]   Search UniProt/NCBI',
-          'protein get <accession>                 Get protein details',
-          'protein sequence <accession>            Get protein sequence',
+          'protein search <query> [--organism=X]     Search UniProt/NCBI',
+          'protein get <accession>                   Get protein details',
+          'protein sequence <accession>              Fetch & save to workspace',
+          '  [--name=X] [--seq]',
         ],
         organism: [
-          'organism search <query>                 Search NCBI Taxonomy',
-          'organism get <tax_id>                   Get organism details',
-          'organism codons <tax_id>                Get codon usage table',
+          'organism search <query>                   Search NCBI Taxonomy',
+          'organism get <tax_id>                     Get organism details',
+          'organism codons <tax_id>                  Get codon usage table',
         ],
         optimize: [
-          'optimize <protein_seq> --organism=<tax_id>',
+          'optimize <name|accession> --organism=<tax_id>',
+          '  Accepts a workspace name or protein accession.',
+          '  Auto-fetches protein if not in workspace.',
+          '  Result saved as <name>-opt.',
           '  [--strategy=frequency|harmonized|balanced]',
           '  [--gc-min=0.4] [--gc-max=0.6]',
           '  [--avoid=EcoRI,BamHI] [--no-repeats]',
+          '  [--name=X] [--seq]',
         ],
         kozak: [
-          'kozak <tax_id> [--start=ATG]            Generate Kozak sequence',
+          'kozak <tax_id> [--start=ATG]              Generate & save Kozak',
+          '  [--name=X]',
         ],
         promoter: [
-          'promoter search <organism> [--gene=X]   Search promoters',
-          'promoter get <id>                       Get promoter details',
+          'promoter search <organism> [--gene=X]     Search promoters',
+          'promoter get <id>                         Fetch & save to workspace',
+          '  [--name=X]',
         ],
         project: [
-          'project list                            List all projects',
-          'project create <name> [--desc=X]        Create project',
-          'project get <id>                        Get project details',
+          'project list                              List all projects',
+          'project create <name> [--desc=X]          Create project',
+          'project get <id>                          Get project details',
           'project update <id> [--name=X] [--desc=X]',
-          'project delete <id>                     Delete project',
+          'project delete <id>                       Delete project',
         ],
         construct: [
+          'construct list --project=<id>             List constructs in project',
           'construct create <name> --project=<id> [--organism=<tax_id>]',
-          'construct get <id>                      Get construct',
-          'construct update <id> [--name=X] [--organism=X] [--elements=<json>]',
-          'construct delete <id>                   Delete construct',
-          'construct assemble <id>                 Assemble full sequence',
+          'construct add <id> <workspace_name>       Add element from workspace',
+          '  [--as=promoter|kozak|cds|terminator|tag|utr|custom]',
+          '  [--position=N]',
+          'construct get <id>                        Show construct elements',
+          'construct delete <id>                     Delete construct',
+          'construct assemble <id> [--seq]           Assemble full sequence',
+        ],
+        workspace: [
+          'ws                                        List workspace objects',
+          'ws add <name> <sequence>                   Add raw sequence to workspace',
+          '  [--type=promoter|cds|terminator|custom]',
+          'show <name>                               Show sequence of object',
+          'show <name> --info                        Show all metadata',
+          'rm <name>                                 Remove from workspace',
+          'rename <old> <new>                        Rename workspace object',
         ],
       };
 
@@ -228,10 +274,17 @@
       print('  history                    Show command history');
       print('  set base-url <url>         Change backend URL');
       print('  help [command]             Show help');
+      print('');
+      print('Global flags:', 'info');
+      print('  --json                     Output raw JSON (for agent/script use)');
+      print('');
+      print('Tip: Sequences are saved to the workspace, not printed.', 'dim');
+      print('Use "show <name>" to view a sequence, or pass --seq to any fetch command.', 'dim');
     }
 
-    async function handleHealth() {
+    async function handleHealth(args, flags) {
       const data = await api('GET', '/health');
+      if (flags && flags.json) { printJson(data); return; }
       print(`Status:   ${data.status}`, data.status === 'ok' ? 'success' : 'warn');
       print(`Database: ${data.database}`, data.database === 'ok' ? 'success' : 'error');
       print(`Redis:    ${data.redis}`, data.redis === 'ok' ? 'success' : 'error');
@@ -245,18 +298,39 @@
         let path = `/api/genes/search?q=${encodeURIComponent(q)}`;
         if (flags.organism) path += `&organism=${encodeURIComponent(flags.organism)}`;
         const data = await api('GET', path);
+        if (flags.json) { printJson(data); return; }
         printTable(data, ['gene_id', 'symbol', 'description', 'organism']);
       } else if (verb === 'get') {
         if (!args[1]) { print('Usage: gene get <gene_id>', 'warn'); return; }
         const data = await api('GET', `/api/genes/${args[1]}`);
+        if (flags.json) { printJson(data); return; }
         printJson(data);
       } else if (verb === 'sequence') {
-        if (!args[1]) { print('Usage: gene sequence <gene_id> [--type=cds]', 'warn'); return; }
-        let path = `/api/genes/${args[1]}/sequence`;
+        if (!args[1]) { print('Usage: gene sequence <gene_id> [--type=cds|mrna] [--name=X] [--seq]', 'warn'); return; }
+        const geneId = args[1];
+        const seqType = flags.type || 'cds';
+        let path = `/api/genes/${geneId}/sequence`;
         if (flags.type) path += `?seq_type=${flags.type}`;
         const data = await api('GET', path);
-        print(`Gene: ${data.gene_id}  Accession: ${data.accession}  Length: ${data.length}  Type: ${data.sequence_type}`, 'info');
-        printSeq(data.sequence);
+
+        // Auto-name: try symbol from accession or fall back to gene-{id}-{type}
+        const autoName = flags.name || (data.symbol ? `${data.symbol}-${seqType}` : `gene-${geneId}-${seqType}`);
+        const wsObj = {
+          type: 'dna',
+          sequence: data.sequence,
+          length: data.length || data.sequence.length,
+          source: 'ncbi-gene',
+          label: `Gene ${geneId} ${seqType.toUpperCase()}`,
+          accession: data.accession || null,
+        };
+        wsStore(autoName, wsObj);
+        if (flags.json) { printJson({ workspace_name: autoName, ...wsObj }); return; }
+        print(`Saved as '${autoName}' (${data.sequence.length} bp, ${seqType.toUpperCase()})`, 'success');
+        if (data.accession) print(`Accession: ${data.accession}`, 'dim');
+        if (flags.seq) {
+          print('');
+          printSeq(data.sequence);
+        }
       } else {
         print('Usage: gene search|get|sequence ...', 'warn');
       }
@@ -270,16 +344,36 @@
         let path = `/api/proteins/search?q=${encodeURIComponent(q)}`;
         if (flags.organism) path += `&organism=${encodeURIComponent(flags.organism)}`;
         const data = await api('GET', path);
+        if (flags.json) { printJson(data); return; }
         printTable(data, ['accession', 'name', 'organism', 'length', 'source']);
       } else if (verb === 'get') {
         if (!args[1]) { print('Usage: protein get <accession>', 'warn'); return; }
         const data = await api('GET', `/api/proteins/${args[1]}`);
         printJson(data);
+        print(`To save sequence to workspace: protein sequence ${args[1]} --name=<name>`, 'dim');
+        return;
       } else if (verb === 'sequence') {
-        if (!args[1]) { print('Usage: protein sequence <accession>', 'warn'); return; }
-        const data = await api('GET', `/api/proteins/${args[1]}/sequence`);
-        print(`Accession: ${data.accession}  Length: ${data.length}  Source: ${data.source}`, 'info');
-        printSeq(data.sequence);
+        if (!args[1]) { print('Usage: protein sequence <accession> [--name=X] [--seq]', 'warn'); return; }
+        const accession = args[1];
+        const data = await api('GET', `/api/proteins/${accession}/sequence`);
+
+        const name = flags.name || accession;
+        const wsObj = {
+          type: 'protein',
+          sequence: data.sequence,
+          length: data.length || data.sequence.length,
+          source: data.source || 'uniprot',
+          label: data.name || accession,
+          accession: data.accession || accession,
+        };
+        wsStore(name, wsObj);
+        if (flags.json) { printJson({ workspace_name: name, ...wsObj }); return; }
+        const labelPart = data.name ? `, ${data.name}` : '';
+        print(`Saved as '${name}' (${data.sequence.length} aa${labelPart})`, 'success');
+        if (flags.seq) {
+          print('');
+          printSeq(data.sequence);
+        }
       } else {
         print('Usage: protein search|get|sequence ...', 'warn');
       }
@@ -291,14 +385,17 @@
         const q = args.slice(1).join(' ');
         if (!q) { print('Usage: organism search <query>', 'warn'); return; }
         const data = await api('GET', `/api/organisms/search?q=${encodeURIComponent(q)}`);
+        if (flags.json) { printJson(data); return; }
         printTable(data, ['tax_id', 'scientific_name', 'common_name']);
       } else if (verb === 'get') {
         if (!args[1]) { print('Usage: organism get <tax_id>', 'warn'); return; }
         const data = await api('GET', `/api/organisms/${args[1]}`);
         printJson(data);
+        return;
       } else if (verb === 'codons') {
         if (!args[1]) { print('Usage: organism codons <tax_id>', 'warn'); return; }
         const data = await api('GET', `/api/organisms/${args[1]}/codon-table`);
+        if (flags.json) { printJson(data); return; }
         print(`Organism tax_id: ${data.organism_tax_id}  Source: ${data.source}`, 'info');
         print('');
         for (const [aa, codons] of Object.entries(data.table)) {
@@ -311,13 +408,50 @@
     }
 
     async function handleOptimize(args, flags) {
-      const seq = args[0];
-      if (!seq || !flags.organism) {
-        print('Usage: optimize <protein_seq> --organism=<tax_id> [--strategy=frequency]', 'warn');
+      const ref = args[0];
+      if (!ref || !flags.organism) {
+        print('Usage: optimize <name|accession> --organism=<tax_id> [--strategy=frequency]', 'warn');
+        print('  Accepts a workspace name or protein accession.', 'dim');
         return;
       }
+
+      // Resolve the protein sequence
+      let proteinSeq = null;
+      let sourceName = ref;
+
+      const wsObj = wsGet(ref);
+      if (wsObj) {
+        if (wsObj.type !== 'protein') {
+          print(`'${ref}' is a ${wsObj.type} sequence, not a protein. Optimization requires a protein sequence.`, 'error');
+          return;
+        }
+        proteinSeq = wsObj.sequence;
+        print(`Using '${ref}' from workspace (${wsObj.length} aa)`, 'dim');
+      } else {
+        // Try fetching as a protein accession
+        print(`'${ref}' not in workspace. Fetching protein sequence...`, 'dim');
+        try {
+          const data = await api('GET', `/api/proteins/${ref}/sequence`);
+          proteinSeq = data.sequence;
+          // Also store the protein in workspace
+          wsStore(ref, {
+            type: 'protein',
+            sequence: data.sequence,
+            length: data.sequence.length,
+            source: data.source || 'uniprot',
+            label: data.name || ref,
+            accession: data.accession || ref,
+          });
+          print(`Fetched and saved protein as '${ref}' (${data.sequence.length} aa)`, 'success');
+        } catch (e) {
+          print(`Could not fetch protein '${ref}': ${e.message}`, 'error');
+          print('Provide a workspace name or valid protein accession.', 'dim');
+          return;
+        }
+      }
+
       const body = {
-        sequence: seq,
+        sequence: proteinSeq,
         organism_tax_id: parseInt(flags.organism),
         strategy: flags.strategy || 'frequency',
         avoid_restriction_sites: flags.avoid ? flags.avoid.split(',') : [],
@@ -328,44 +462,91 @@
 
       print('Optimizing...', 'dim');
       const data = await api('POST', '/api/optimization/optimize', body);
-      print(`Job ID:   ${data.job_id}`, 'info');
-      print(`Status:   ${data.status}`, 'success');
-      if (data.cai_before != null) print(`CAI:      ${data.cai_before} → ${data.cai_after}`);
-      if (data.gc_content != null) print(`GC:       ${(data.gc_content * 100).toFixed(1)}%`);
-      if (data.optimized_sequence) {
+
+      const resultName = flags.name || `${sourceName}-opt`;
+      const optSeq = data.optimized_sequence || '';
+      const optObj = {
+        type: 'dna',
+        sequence: optSeq,
+        length: optSeq.length,
+        source: 'optimized',
+        label: `${sourceName} optimized for ${flags.organism}`,
+        cai_before: data.cai_before,
+        cai_after: data.cai_after,
+        gc_content: data.gc_content,
+        job_id: data.job_id,
+      };
+      wsStore(resultName, optObj);
+
+      if (flags.json) { printJson({ workspace_name: resultName, ...optObj, ...data }); return; }
+
+      let summary = `Saved as '${resultName}' (${optSeq.length} bp`;
+      if (data.cai_before != null) summary += `, CAI: ${data.cai_before} → ${data.cai_after}`;
+      if (data.gc_content != null) summary += `, GC: ${(data.gc_content * 100).toFixed(1)}%`;
+      summary += ')';
+      print(summary, 'success');
+
+      if (flags.seq && optSeq) {
         print('');
-        printSeq(data.optimized_sequence, 'Optimized sequence');
+        printSeq(optSeq);
       }
     }
 
     async function handleKozak(args, flags) {
       const taxId = args[0];
-      if (!taxId) { print('Usage: kozak <tax_id> [--start=ATG]', 'warn'); return; }
+      if (!taxId) { print('Usage: kozak <tax_id> [--start=ATG] [--name=X]', 'warn'); return; }
       const body = {
         organism_tax_id: parseInt(taxId),
         start_codon: flags.start || 'ATG',
       };
       const data = await api('POST', '/api/regulatory/kozak', body);
-      print(`Organism:  ${data.organism}`, 'info');
-      print(`Consensus: ${data.consensus}`);
-      print(`Sequence:  ${data.sequence}`, 'success');
-      if (data.notes) print(`Notes:     ${data.notes}`, 'dim');
+
+      const name = flags.name || `kozak-${taxId}`;
+      const kozakObj = {
+        type: 'kozak',
+        sequence: data.sequence,
+        length: data.sequence.length,
+        source: 'generated',
+        label: `${data.organism} Kozak`,
+        consensus: data.consensus,
+        notes: data.notes || null,
+      };
+      wsStore(name, kozakObj);
+      if (flags.json) { printJson({ workspace_name: name, ...kozakObj }); return; }
+      // Kozak sequences are short enough to show inline
+      print(`Saved as '${name}' (${data.sequence.length} bp, ${data.organism}: ${data.sequence})`, 'success');
+      if (data.notes) print(`Notes: ${data.notes}`, 'dim');
     }
 
     async function handlePromoter(args, flags) {
       const verb = args[0];
       if (verb === 'search') {
-        const org = args.slice(1).join(' ');
-        if (!org) { print('Usage: promoter search <organism> [--gene=X]', 'warn'); return; }
+        const org = flags.organism || args.slice(1).join(' ');
+        if (!org) { print('Usage: promoter search <organism> [--organism=X] [--gene=X]', 'warn'); return; }
         let path = `/api/regulatory/promoters/search?organism=${encodeURIComponent(org)}`;
         if (flags.gene) path += `&gene=${encodeURIComponent(flags.gene)}`;
         const data = await api('GET', path);
+        if (flags.json) { printJson(data); return; }
         print(`Found ${data.total} promoter(s)`, 'info');
         printTable(data.promoters, ['id', 'name', 'organism', 'strength', 'description']);
       } else if (verb === 'get') {
-        if (!args[1]) { print('Usage: promoter get <promoter_id>', 'warn'); return; }
+        if (!args[1]) { print('Usage: promoter get <promoter_id> [--name=X]', 'warn'); return; }
         const data = await api('GET', `/api/regulatory/promoters/${args[1]}`);
-        printJson(data);
+        if (flags.json) { printJson(data); return; }
+
+        const name = flags.name || data.name || args[1];
+        wsStore(name, {
+          type: 'promoter',
+          sequence: data.sequence || '',
+          length: data.length || (data.sequence ? data.sequence.length : 0),
+          source: 'promoter-db',
+          label: data.description || data.name || args[1],
+          strength: data.strength || null,
+          organism: data.organism || null,
+        });
+        const desc = data.description ? `, ${data.description}` : '';
+        const len = data.length || (data.sequence ? data.sequence.length : 0);
+        print(`Saved as '${name}' (${len} bp${desc})`, 'success');
       } else {
         print('Usage: promoter search|get ...', 'warn');
       }
@@ -375,18 +556,30 @@
       const verb = args[0];
       if (verb === 'list') {
         const data = await api('GET', '/api/projects/');
+        if (flags.json) { printJson(data); return; }
         printTable(data, ['id', 'name', 'description', 'created_at']);
       } else if (verb === 'create') {
         const name = args.slice(1).join(' ');
         if (!name) { print('Usage: project create <name> [--desc=X]', 'warn'); return; }
         const body = { name, description: flags.desc || null };
         const data = await api('POST', '/api/projects/', body);
+        if (flags.json) { printJson(data); return; }
         print(`Created project: ${data.id}`, 'success');
-        printJson(data);
+        print(`Name: ${data.name}`, 'info');
+        if (data.description) print(`Description: ${data.description}`, 'dim');
       } else if (verb === 'get') {
         if (!args[1]) { print('Usage: project get <id>', 'warn'); return; }
         const data = await api('GET', `/api/projects/${args[1]}`);
-        printJson(data);
+        if (flags.json) { printJson(data); return; }
+        print(`Project: ${data.name}`, 'info');
+        print(`ID: ${data.id}`, 'dim');
+        if (data.description) print(`Description: ${data.description}`);
+        print(`Created: ${data.created_at}`, 'dim');
+        if (data.constructs && data.constructs.length) {
+          print('');
+          print('Constructs:', 'info');
+          printTable(data.constructs, ['id', 'name', 'organism_tax_id', 'updated_at']);
+        }
       } else if (verb === 'update') {
         if (!args[1]) { print('Usage: project update <id> [--name=X] [--desc=X]', 'warn'); return; }
         const body = {};
@@ -394,7 +587,6 @@
         if (flags.desc) body.description = flags.desc;
         const data = await api('PUT', `/api/projects/${args[1]}`, body);
         print('Updated.', 'success');
-        printJson(data);
       } else if (verb === 'delete') {
         if (!args[1]) { print('Usage: project delete <id>', 'warn'); return; }
         await api('DELETE', `/api/projects/${args[1]}`);
@@ -406,7 +598,26 @@
 
     async function handleConstruct(args, flags) {
       const verb = args[0];
-      if (verb === 'create') {
+      if (verb === 'list') {
+        if (!flags.project) {
+          print('Usage: construct list --project=<id>', 'warn');
+          return;
+        }
+        const data = await api('GET', `/api/constructs/?project_id=${encodeURIComponent(flags.project)}`);
+        if (flags.json) { printJson(data); return; }
+        if (!data.length) {
+          print('No constructs in this project.', 'dim');
+          return;
+        }
+        const rows = data.map(c => ({
+          id: c.id,
+          name: c.name,
+          organism: c.organism_tax_id || '—',
+          elements: c.elements ? c.elements.length : 0,
+          created_at: c.created_at,
+        }));
+        printTable(rows, ['id', 'name', 'organism', 'elements', 'created_at']);
+      } else if (verb === 'create') {
         const name = args.slice(1).join(' ');
         if (!name || !flags.project) {
           print('Usage: construct create <name> --project=<id> [--organism=<tax_id>]', 'warn');
@@ -416,53 +627,222 @@
           project_id: flags.project,
           name: name,
           organism_tax_id: flags.organism ? parseInt(flags.organism) : null,
-          elements: flags.elements ? JSON.parse(flags.elements) : [],
+          elements: [],
         };
         const data = await api('POST', '/api/constructs/', body);
+        if (flags.json) { printJson(data); return; }
         print(`Created construct: ${data.id}`, 'success');
-        printJson(data);
+        print(`Name: ${data.name}`, 'info');
+        print(`Next: construct add ${data.id} <workspace_name> --as=cds|promoter|...`, 'dim');
+      } else if (verb === 'add') {
+        const constructId = args[1];
+        const wsName = args[2];
+        if (!constructId || !wsName) {
+          print('Usage: construct add <construct_id> <workspace_name> [--as=type] [--position=N]', 'warn');
+          return;
+        }
+        const wsObj = wsGet(wsName);
+        if (!wsObj) {
+          print(`'${wsName}' not found in workspace. Use 'ws' to list available objects.`, 'error');
+          return;
+        }
+
+        // Infer element type from workspace object type, or use --as override
+        const typeMap = {
+          'promoter': 'promoter',
+          'kozak': 'kozak',
+          'dna': 'cds',
+          'protein': 'cds',
+        };
+        const elementType = flags.as || typeMap[wsObj.type] || 'custom';
+
+        // Fetch current construct to determine next position and existing elements
+        const current = await api('GET', `/api/constructs/${constructId}`);
+        const existingElements = current.elements || [];
+        const nextPos = flags.position != null ? parseInt(flags.position) : existingElements.length;
+
+        // Build updated element list
+        const newElement = {
+          element_type: elementType,
+          label: wsName,
+          sequence: wsObj.sequence,
+          position: nextPos,
+        };
+
+        // If inserting at a specific position, shift existing elements
+        const updatedElements = existingElements.map(el => ({
+          element_type: el.element_type,
+          label: el.label,
+          sequence: el.sequence,
+          position: el.position >= nextPos ? el.position + 1 : el.position,
+        }));
+        updatedElements.push(newElement);
+        updatedElements.sort((a, b) => a.position - b.position);
+
+        const updateResult = await api('PUT', `/api/constructs/${constructId}`, { elements: updatedElements });
+        if (flags.json) { printJson(updateResult); return; }
+        print(`Added '${wsName}' as ${elementType} at position ${nextPos} (${wsObj.length} ${wsUnit(wsObj.type)})`, 'success');
+
       } else if (verb === 'get') {
         if (!args[1]) { print('Usage: construct get <id>', 'warn'); return; }
         const data = await api('GET', `/api/constructs/${args[1]}`);
-        printJson(data);
-      } else if (verb === 'update') {
-        if (!args[1]) { print('Usage: construct update <id> [--name=X] [--organism=X] [--elements=<json>]', 'warn'); return; }
-        const body = {};
-        if (flags.name) body.name = flags.name;
-        if (flags.organism) body.organism_tax_id = parseInt(flags.organism);
-        if (flags.elements) body.elements = JSON.parse(flags.elements);
-        const data = await api('PUT', `/api/constructs/${args[1]}`, body);
-        print('Updated.', 'success');
-        printJson(data);
+        if (flags.json) { printJson(data); return; }
+        print(`Construct: ${data.name}`, 'info');
+        print(`ID: ${data.id}`, 'dim');
+        if (data.organism_tax_id) print(`Organism: ${data.organism_tax_id}`);
+        if (data.elements && data.elements.length) {
+          print('');
+          print('Elements:', 'info');
+          const rows = data.elements
+            .sort((a, b) => a.position - b.position)
+            .map(el => ({
+              position: el.position,
+              label: el.label,
+              type: el.element_type,
+              length: el.sequence ? `${el.sequence.length} bp` : '—',
+            }));
+          printTable(rows, ['position', 'label', 'type', 'length']);
+        } else {
+          print('No elements yet. Use "construct add <id> <workspace_name>" to add elements.', 'dim');
+        }
       } else if (verb === 'delete') {
         if (!args[1]) { print('Usage: construct delete <id>', 'warn'); return; }
         await api('DELETE', `/api/constructs/${args[1]}`);
         print('Deleted.', 'success');
       } else if (verb === 'assemble') {
-        if (!args[1]) { print('Usage: construct assemble <id>', 'warn'); return; }
+        if (!args[1]) { print('Usage: construct assemble <id> [--seq]', 'warn'); return; }
         const data = await api('POST', `/api/constructs/${args[1]}/assemble`);
+        if (flags.json) { printJson(data); return; }
         if (data.full_sequence) {
           print(`Total length: ${data.full_sequence.length} bp`, 'info');
-          printSeq(data.full_sequence, 'Assembled sequence');
+        }
+        if (data.annotations && data.annotations.length) {
+          print('');
+          print('Annotations:', 'info');
+          printTable(data.annotations, ['label', 'type', 'start', 'end', 'length']);
         }
         if (data.warnings && data.warnings.length) {
           print('');
           data.warnings.forEach(w => print('Warning: ' + w, 'warn'));
         }
-        if (data.annotations && data.annotations.length) {
+        if (flags.seq && data.full_sequence) {
           print('');
-          print('Annotations:', 'info');
-          printTable(data.annotations, ['label', 'type', 'start', 'end']);
+          printSeq(data.full_sequence, 'Assembled sequence');
         }
       } else {
-        print('Usage: construct create|get|update|delete|assemble ...', 'warn');
+        print('Usage: construct list|create|add|get|delete|assemble ...', 'warn');
       }
+    }
+
+    // ── Workspace commands ──────────────────────────────────────────
+    function handleWorkspace(args, flags) {
+      // ws add <name> <sequence> [--type=X]
+      if (args[0] === 'add') {
+        const name = args[1];
+        const seq = args.slice(2).join('');
+        if (!name || !seq) {
+          print('Usage: ws add <name> <sequence> [--type=promoter|cds|terminator|custom]', 'warn');
+          return;
+        }
+        if (!/^[ATCGatcg]+$/.test(seq)) {
+          print('Sequence must contain only A, T, C, G characters.', 'error');
+          return;
+        }
+        const seqType = flags.type || 'custom';
+        wsStore(name, {
+          type: seqType === 'cds' || seqType === 'promoter' || seqType === 'terminator' ? seqType : 'dna',
+          sequence: seq.toUpperCase(),
+          length: seq.length,
+          source: 'manual',
+          label: name,
+        });
+        print(`Saved '${name}' as ${seqType} (${seq.length} bp)`, 'success');
+        return;
+      }
+
+      const entries = Object.entries(state.workspace);
+      if (flags && flags.json) {
+        printJson(Object.fromEntries(entries.map(([name, obj]) => [name, { type: obj.type, length: obj.length, label: obj.label || '' }])));
+        return;
+      }
+      if (entries.length === 0) {
+        print('Workspace is empty.', 'dim');
+        print('Fetch sequences with gene/protein/optimize/kozak/promoter commands,', 'dim');
+        print('or use "ws add <name> <sequence>" to add a raw sequence.', 'dim');
+        return;
+      }
+      const rows = entries.map(([name, obj]) => ({
+        name,
+        type: obj.type,
+        length: `${obj.length} ${wsUnit(obj.type)}`,
+        label: obj.label || '',
+      }));
+      printTable(rows, ['name', 'type', 'length', 'label']);
+    }
+
+    function handleShow(args, flags) {
+      const name = args[0];
+      if (!name) { print('Usage: show <name> [--info]', 'warn'); return; }
+      const obj = wsGet(name);
+      if (!obj) {
+        print(`'${name}' not found in workspace. Use 'ws' to list available objects.`, 'error');
+        return;
+      }
+      if (flags.json) {
+        printJson({ workspace_name: name, ...obj });
+        return;
+      }
+      if (flags.info) {
+        print(`Name:     ${name}`, 'info');
+        print(`Type:     ${obj.type}`);
+        print(`Length:   ${obj.length} ${wsUnit(obj.type)}`);
+        print(`Source:   ${obj.source}`);
+        if (obj.label) print(`Label:    ${obj.label}`);
+        if (obj.accession) print(`Accession: ${obj.accession}`);
+        if (obj.cai_before != null) print(`CAI:      ${obj.cai_before} → ${obj.cai_after}`);
+        if (obj.gc_content != null) print(`GC:       ${(obj.gc_content * 100).toFixed(1)}%`);
+        if (obj.consensus) print(`Consensus: ${obj.consensus}`);
+        if (obj.strength) print(`Strength: ${obj.strength}`);
+        if (obj.notes) print(`Notes:    ${obj.notes}`);
+        print('');
+        printSeq(obj.sequence);
+      } else {
+        print(`${name} (${obj.length} ${wsUnit(obj.type)}, ${obj.type}):`, 'info');
+        printSeq(obj.sequence);
+      }
+    }
+
+    function handleRm(args) {
+      const name = args[0];
+      if (!name) { print('Usage: rm <name>', 'warn'); return; }
+      if (!wsGet(name)) {
+        print(`'${name}' not found in workspace.`, 'error');
+        return;
+      }
+      delete state.workspace[name];
+      print(`Removed '${name}' from workspace.`, 'success');
+    }
+
+    function handleRename(args) {
+      const [oldName, newName] = args;
+      if (!oldName || !newName) { print('Usage: rename <old> <new>', 'warn'); return; }
+      if (!wsGet(oldName)) {
+        print(`'${oldName}' not found in workspace.`, 'error');
+        return;
+      }
+      if (wsGet(newName)) {
+        print(`'${newName}' already exists in workspace. Remove it first or choose a different name.`, 'error');
+        return;
+      }
+      state.workspace[newName] = state.workspace[oldName];
+      delete state.workspace[oldName];
+      print(`Renamed '${oldName}' → '${newName}'`, 'success');
     }
 
     // ── Command dispatch ────────────────────────────────────────────
     const commands = {
       help: (a, f) => handleHelp(a),
-      health: () => handleHealth(),
+      health: (a, f) => handleHealth(a, f),
       gene: handleGene,
       protein: handleProtein,
       organism: handleOrganism,
@@ -471,6 +851,11 @@
       promoter: handlePromoter,
       project: handleProject,
       construct: handleConstruct,
+      ws: (a, f) => handleWorkspace(a, f),
+      workspace: (a, f) => handleWorkspace(a, f),
+      show: handleShow,
+      rm: handleRm,
+      rename: handleRename,
       clear: () => { termEl.innerHTML = ''; },
       history: () => { state.history.forEach((h, i) => print(`  ${i + 1}  ${h}`)); },
       set: (args) => {
@@ -506,7 +891,11 @@
       try {
         await handler(args.slice(1), flags);
       } catch (e) {
-        print(`Error: ${e.message}`, 'error');
+        if (flags.json) {
+          printJson({ error: e.message, command: trimmed });
+        } else {
+          print(`ERROR: ${e.message}`, 'error');
+        }
       }
       print('');
     }
@@ -540,12 +929,13 @@
 
     // ── Startup banner ──────────────────────────────────────────────
     print('╔══════════════════════════════════════════╗', 'info');
-    print('║          GenBit Terminal v0.1            ║', 'info');
+    print('║          GenBit Terminal v0.2            ║', 'info');
     print('║  Synthetic Biology Construct Designer    ║', 'info');
     print('╚══════════════════════════════════════════╝', 'info');
     print('');
     print(`Backend: ${state.baseUrl}`, 'dim');
-    print("Type 'help' for available commands.", 'dim');
+    print("Type 'help' for commands. Sequences are saved to your workspace.", 'dim');
+    print("Use 'ws' to list saved objects, 'show <name>' to view a sequence.", 'dim');
     print('');
   </script>
 </body>

@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
+from app.dependencies import get_db, get_session_id
 from app.schemas.optimization import OptimizationRequest, OptimizationResponse
 from app.services import codon_optimization_service, optimization_job_service
 
@@ -12,7 +12,9 @@ router = APIRouter()
 
 @router.post("/optimize", response_model=OptimizationResponse)
 async def optimize_codons(
-    request: OptimizationRequest, db: AsyncSession = Depends(get_db)
+    request: OptimizationRequest,
+    db: AsyncSession = Depends(get_db),
+    session_id: str = Depends(get_session_id),
 ):
     # Create job record
     job = await optimization_job_service.create_job(
@@ -26,6 +28,7 @@ async def optimize_codons(
             "target_gc_max": request.target_gc_max,
             "avoid_repeats": request.avoid_repeats,
         },
+        session_id=session_id,
     )
 
     try:
@@ -62,9 +65,11 @@ async def optimize_codons(
 
 @router.get("/jobs/{job_id}", response_model=OptimizationResponse)
 async def get_optimization_job(
-    job_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    session_id: str = Depends(get_session_id),
 ):
-    job = await optimization_job_service.get_job(db, job_id)
+    job = await optimization_job_service.get_job(db, job_id, session_id)
     if not job:
         raise HTTPException(status_code=404, detail="Optimization job not found")
     return OptimizationResponse(

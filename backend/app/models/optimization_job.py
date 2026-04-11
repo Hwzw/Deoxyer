@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Text, func
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,6 +20,7 @@ class OptimizationJob(Base):
     __tablename__ = "optimization_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[str] = mapped_column(String(36), index=True)
     construct_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("constructs.id", ondelete="SET NULL")
     )

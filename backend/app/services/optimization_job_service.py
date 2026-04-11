@@ -14,12 +14,14 @@ async def create_job(
     db: AsyncSession,
     input_sequence: str,
     parameters: dict,
+    session_id: str,
     construct_id: uuid.UUID | None = None,
 ) -> OptimizationJob:
     job = OptimizationJob(
         input_sequence=input_sequence,
         parameters_json=parameters,
         construct_id=construct_id,
+        session_id=session_id,
         status=JobStatus.PENDING,
     )
     db.add(job)
@@ -54,9 +56,12 @@ async def fail_job(
 
 
 async def get_job(
-    db: AsyncSession, job_id: uuid.UUID
+    db: AsyncSession, job_id: uuid.UUID, session_id: str
 ) -> OptimizationJob | None:
     result = await db.execute(
-        select(OptimizationJob).where(OptimizationJob.id == job_id)
+        select(OptimizationJob).where(
+            OptimizationJob.id == job_id,
+            OptimizationJob.session_id == session_id,
+        )
     )
     return result.scalar_one_or_none()

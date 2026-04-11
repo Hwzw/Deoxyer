@@ -41,6 +41,34 @@ SYNTHETIC_PROMOTERS = {
             description="Cauliflower mosaic virus 35S promoter", strength="strong",
         ),
     ],
+    "bacterial": [
+        PromoterInfo(
+            id="syn_t7", name="T7", organism="bacterial", sequence="TAATACGACTCACTATAGGG", length=19,
+            description="T7 RNA polymerase promoter", strength="strong",
+        ),
+        PromoterInfo(
+            id="syn_tac", name="tac", organism="bacterial", sequence="", length=0,
+            description="Hybrid trp/lac promoter (IPTG-inducible)", strength="strong",
+        ),
+        PromoterInfo(
+            id="syn_lac", name="lac", organism="bacterial", sequence="", length=0,
+            description="Lactose operon promoter (IPTG-inducible)", strength="moderate",
+        ),
+    ],
+    "ecoli": [
+        PromoterInfo(
+            id="syn_t7", name="T7", organism="bacterial", sequence="TAATACGACTCACTATAGGG", length=19,
+            description="T7 RNA polymerase promoter", strength="strong",
+        ),
+        PromoterInfo(
+            id="syn_tac", name="tac", organism="bacterial", sequence="", length=0,
+            description="Hybrid trp/lac promoter (IPTG-inducible)", strength="strong",
+        ),
+        PromoterInfo(
+            id="syn_lac", name="lac", organism="bacterial", sequence="", length=0,
+            description="Lactose operon promoter (IPTG-inducible)", strength="moderate",
+        ),
+    ],
 }
 
 

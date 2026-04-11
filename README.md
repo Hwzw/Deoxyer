@@ -11,6 +11,8 @@ Synthetic biology construct designer for heterologous protein expression. Design
 - **Promoter Selection** — Browse synthetic promoters (CMV, EF1a, GAL1, CaMV 35S, etc.) and search the Eukaryotic Promoter Database
 - **Construct Assembly** — Build constructs from promoter → Kozak → CDS → terminator with validation and assembly
 - **Project Management** — Save, organize, and revisit construct designs
+- **Session Isolation** — Each browser session gets its own workspace; projects and data are scoped per user
+- **Agent-Friendly Output** — `--json` flag on any command for machine-readable JSON output
 
 ## Tech Stack
 
@@ -124,15 +126,30 @@ python -m pytest
 | `optimize <seq> --organism=<tax_id>` | Run codon optimization |
 | `kozak <tax_id>` | Generate Kozak sequence |
 | `promoter search <organism>` | Search promoters |
-| `project list` | List all projects |
+| `project list` | List your projects |
 | `project create <name>` | Create a new project |
 | `construct create <name> --project=<id>` | Create a construct |
-| `construct assemble <id>` | Assemble full sequence |
+| `construct add <id> <workspace_name>` | Add element to construct |
+| `construct get <id>` | View construct elements |
+| `construct assemble <id> [--seq]` | Assemble full sequence |
+| `ws` | List workspace objects |
+| `show <name>` | View a saved sequence |
 | `help` | Show all commands with full flag options |
+
+### Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output raw JSON instead of formatted text (useful for scripting and agent integration) |
+| `--seq` | Print the sequence inline (on fetch/assemble commands) |
+
+## Session Isolation
+
+Each browser tab generates a unique anonymous session ID (stored in `localStorage`). All projects, constructs, and optimization jobs are scoped to your session — you only see your own data. Clearing browser site data starts a fresh session.
 
 ## API Docs
 
-Interactive Swagger docs at **http://localhost:8000/docs** when the backend is running.
+Interactive Swagger docs at **http://localhost:8000/docs** when the backend is running. All endpoints that create or access user data require an `X-Session-ID` header.
 
 ## License
 

@@ -11,6 +11,16 @@ from app.models.construct_element import ConstructElement
 from app.schemas.construct import ConstructCreate, ConstructUpdate
 
 
+async def list_constructs(db: AsyncSession, project_id: uuid.UUID) -> list[Construct]:
+    result = await db.execute(
+        select(Construct)
+        .options(selectinload(Construct.elements))
+        .where(Construct.project_id == project_id)
+        .order_by(Construct.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
 async def get_construct(db: AsyncSession, construct_id: uuid.UUID) -> Construct | None:
     result = await db.execute(
         select(Construct)
@@ -40,8 +50,7 @@ async def create_construct(db: AsyncSession, data: ConstructCreate) -> Construct
         ))
 
     await db.commit()
-    await db.refresh(construct)
-    return construct
+    return await get_construct(db, construct.id)
 
 
 async def update_construct(
@@ -54,9 +63,23 @@ async def update_construct(
         construct.name = data.name
     if data.organism_tax_id is not None:
         construct.organism_tax_id = data.organism_tax_id
+    if data.elements is not None:
+        # Remove existing elements
+        for elem in list(construct.elements):
+            await db.delete(elem)
+        await db.flush()
+        # Add new elements
+        for elem in data.elements:
+            db.add(ConstructElement(
+                construct_id=construct.id,
+                element_type=elem.element_type,
+                label=elem.label,
+                sequence=elem.sequence,
+                position=elem.position,
+                metadata_json=elem.metadata_json,
+            ))
     await db.commit()
-    await db.refresh(construct)
-    return construct
+    return await get_construct(db, construct_id)
 
 
 async def delete_construct(db: AsyncSession, construct_id: uuid.UUID) -> bool:

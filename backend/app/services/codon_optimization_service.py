@@ -4,6 +4,8 @@ Uses DNAchisel for constraint-based optimization and python-codon-tables
 for organism-specific codon usage frequencies.
 """
 
+import copy
+
 from dnachisel import (
     AvoidPattern,
     CodonOptimize,
@@ -40,7 +42,7 @@ def optimize_sequence(
         EnforceTranslation(),
     ]
     objectives = [
-        CodonOptimize(species=None, codon_usage_table=codon_table.table),
+        CodonOptimize(species=None, codon_usage_table=copy.deepcopy(codon_table.table)),
     ]
 
     if target_gc_min is not None and target_gc_max is not None:

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 
 from app.clients import ncbi_client
 from app.schemas.gene import GeneDetail, GeneSearchResult, GeneSequence
@@ -45,7 +49,7 @@ async def get_gene(
             if cached:
                 return GeneDetail(**cached)
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
 
     summary = await ncbi_client.esummary(db="gene", id=gene_id)
     doc_sums = summary.get("DocumentSummarySet", {}).get("DocumentSummary", [])
@@ -72,7 +76,7 @@ async def get_gene(
         try:
             await cache.set_cached(cache_key, result.model_dump(mode="json"), ttl=TTL_GENE)
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
 
     return result
 
@@ -88,7 +92,7 @@ async def get_gene_sequence(
             if cached:
                 return GeneSequence(**cached)
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
 
     # Fetch FASTA text for this gene ID from NCBI Nucleotide
     try:
@@ -121,6 +125,6 @@ async def get_gene_sequence(
         try:
             await cache.set_cached(cache_key, result.model_dump(mode="json"), ttl=TTL_GENE)
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
 
     return result

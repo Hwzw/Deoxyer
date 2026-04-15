@@ -4,6 +4,7 @@ Loads promoter data from CSV, supplemented by EPD API queries.
 """
 
 import csv
+import logging
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -74,9 +75,36 @@ def _load_promoters() -> list[PromoterInfo]:
     return _PROMOTER_DATA
 
 
+# Map common tax IDs to organism names used in the CSV
+_TAX_ID_TO_ORGANISM = {
+    562: "Escherichia coli",
+    9606: "Human",
+    10090: "Murine",
+    4932: "Saccharomyces cerevisiae",
+    3702: "Arabidopsis",
+    4577: "Zea mays",
+    7227: "Drosophila",
+    1423: "Bacillus subtilis",
+    1613: "Lactococcus lactis",
+    4081: "Pichia pastoris",
+    28985: "Kluyveromyces lactis",
+    1148: "Synechocystis",
+    5544: "Trichoderma reesei",
+    176275: "Agrobacterium tumefaciens",
+    39947: "Oryza sativa",
+}
+
+
 def _match_organism(promoter: PromoterInfo, query: str) -> bool:
-    """Check if a promoter matches an organism search query."""
-    q = query.lower()
+    """Check if a promoter matches an organism search query.
+
+    Supports both text queries (e.g. 'human') and numeric tax IDs (e.g. '562').
+    """
+    # Resolve numeric tax IDs to organism names
+    q = query.strip()
+    if q.isdigit():
+        q = _TAX_ID_TO_ORGANISM.get(int(q), q)
+    q = q.lower()
     fields = [
         promoter.organism.lower(),
         promoter.name.lower(),
@@ -113,9 +141,16 @@ async def search_promoters(
                 )
             )
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("EPD API query failed", exc_info=True)
 
-    return PromoterSearchResult(promoters=promoters[:limit], total=len(promoters))
+    message = None
+    if not promoters:
+        if organism.strip().isdigit() and int(organism) not in _TAX_ID_TO_ORGANISM:
+            message = f"Tax ID {organism} is not in the supported promoter list. Try searching by organism name."
+        else:
+            message = f"No promoters found for '{organism}'. Try a broader search term or different organism."
+
+    return PromoterSearchResult(promoters=promoters[:limit], total=len(promoters), message=message)
 
 
 async def get_promoter(promoter_id: str) -> PromoterInfo:

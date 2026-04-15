@@ -20,3 +20,5 @@ class CodonTableResponse(BaseModel):
     organism_tax_id: int
     source: str
     table: dict[str, dict[str, float]]  # amino_acid -> {codon: frequency}
+    is_fallback: bool = False
+    notes: str | None = None

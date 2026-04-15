@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 import python_codon_tables as pct
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 
 from app.clients import ncbi_client
 from app.schemas.organism import CodonTableResponse, OrganismDetail, OrganismSearchResult
@@ -41,7 +45,7 @@ async def get_organism(
             if cached:
                 return OrganismDetail(**cached)
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
 
     detail = await ncbi_client.fetch_taxonomy(str(tax_id))
     if not detail:
@@ -61,7 +65,7 @@ async def get_organism(
         try:
             await cache.set_cached(cache_key, result.model_dump(mode="json"), ttl=TTL_ORGANISM)
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
 
     return result
 
@@ -70,19 +74,23 @@ def get_codon_table(tax_id: int) -> CodonTableResponse:
     """Get codon usage table. Tries python-codon-tables first."""
     available = pct.get_all_available_codons_tables()
     table_name = None
+    tax_str = str(tax_id)
     for name in available:
-        if str(tax_id) in name:
+        # Match tax ID as a distinct number segment to avoid false substring matches
+        if name.endswith(f"_{tax_str}") or f"_{tax_str}_" in name:
             table_name = name
             break
 
-    if table_name:
-        table = pct.get_codons_table(table_name)
-    else:
-        # Default to E. coli if organism not found
+    is_fallback = table_name is None
+    if is_fallback:
         table = pct.get_codons_table("e_coli_316407")
+    else:
+        table = pct.get_codons_table(table_name)
 
     return CodonTableResponse(
         organism_tax_id=tax_id,
         source="python-codon-tables",
         table=table,
+        is_fallback=is_fallback,
+        notes="No codon table found for this organism; using E. coli as fallback" if is_fallback else None,
     )

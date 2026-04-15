@@ -5,8 +5,8 @@ from app.services.kozak_service import generate_kozak
 
 def test_human_kozak():
     result = generate_kozak(organism_tax_id=9606)
-    assert result["consensus"] == "GCCACCATGG"
-    assert "ATG" in result["sequence"]
+    assert result["consensus"] == "gccRccATGG"
+    assert "ATG" in result["sequence"].upper()
 
 
 def test_yeast_kozak():

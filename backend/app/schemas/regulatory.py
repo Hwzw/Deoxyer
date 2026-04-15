@@ -14,6 +14,7 @@ class PromoterInfo(BaseModel):
 class PromoterSearchResult(BaseModel):
     promoters: list[PromoterInfo]
     total: int
+    message: str | None = None
 
 
 class KozakConfig(BaseModel):

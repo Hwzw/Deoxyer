@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 
 from app.clients import ncbi_client
 from app.clients.uniprot_client import uniprot_client
@@ -34,7 +38,7 @@ async def search_proteins(
                 )
             )
     except Exception:
-        pass  # Fall through to NCBI
+        logger.debug("UniProt lookup failed, falling back to NCBI", exc_info=True)
 
     # Supplement with NCBI if needed
     if len(results) < limit:
@@ -57,7 +61,7 @@ async def search_proteins(
                         )
                     )
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
     return results
 
 
@@ -79,7 +83,10 @@ def _extract_tax_id_from_ncbi_protein(record: dict) -> int | None:
                 if qual.get("GBQualifier_name") == "db_xref":
                     val = qual.get("GBQualifier_value", "")
                     if val.startswith("taxon:"):
-                        return int(val.replace("taxon:", ""))
+                        try:
+                            return int(val.replace("taxon:", ""))
+                        except ValueError:
+                            return None
     return None
 
 
@@ -94,7 +101,7 @@ async def get_protein(
             if cached:
                 return ProteinDetail(**cached)
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
 
     # Try UniProt first
     try:
@@ -134,7 +141,7 @@ async def get_protein(
                 pass
         return result
     except Exception:
-        pass  # Fall through to NCBI
+        logger.debug("UniProt lookup failed, falling back to NCBI", exc_info=True)
 
     # NCBI fallback
     try:
@@ -163,7 +170,7 @@ async def get_protein(
         try:
             await cache.set_cached(cache_key, result.model_dump(mode="json"), ttl=TTL_PROTEIN)
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
     return result
 
 
@@ -178,7 +185,7 @@ async def get_protein_sequence(
             if cached:
                 return ProteinSequence(**cached)
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
 
     # Try UniProt FASTA first
     try:
@@ -199,7 +206,7 @@ async def get_protein_sequence(
                     pass
             return result
     except Exception:
-        pass
+        logger.debug("External lookup failed", exc_info=True)
 
     # NCBI fallback
     try:
@@ -229,5 +236,5 @@ async def get_protein_sequence(
         try:
             await cache.set_cached(cache_key, result.model_dump(mode="json"), ttl=TTL_PROTEIN)
         except Exception:
-            pass
+            logger.warning("Cache operation failed", exc_info=True)
     return result

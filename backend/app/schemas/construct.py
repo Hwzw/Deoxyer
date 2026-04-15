@@ -1,26 +1,28 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.models.construct_element import ElementType
 
 
 class ConstructElementSchema(BaseModel):
-    element_type: str
-    label: str
-    sequence: str
+    element_type: ElementType
+    label: str = Field(..., max_length=255)
+    sequence: str = Field(..., max_length=100_000)
     position: int
     metadata_json: dict | None = None
 
 
 class ConstructCreate(BaseModel):
     project_id: uuid.UUID
-    name: str
+    name: str = Field(..., max_length=255)
     organism_tax_id: int | None = None
     elements: list[ConstructElementSchema] = []
 
 
 class ConstructUpdate(BaseModel):
-    name: str | None = None
+    name: str | None = Field(None, max_length=255)
     organism_tax_id: int | None = None
     elements: list[ConstructElementSchema] | None = None
 

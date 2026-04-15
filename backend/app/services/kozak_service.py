@@ -52,7 +52,7 @@ _TAX_ID_MAP = {
     7227: "Fruit fly",
     # Yeast
     4932: "Budding yeast",
-    28985: "Kluyveromyces",  # K. lactis
+    28985: "Budding yeast",  # K. lactis — similar Kozak to S. cerevisiae
     # Plants
     3702: "Terrestrial plants",
     4577: "Terrestrial plants",  # Zea mays
@@ -92,11 +92,7 @@ def _find_kozak_entry(organism_tax_id: int) -> dict | None:
             if search_term.lower() in entry["organism"].lower():
                 return entry
 
-    # Default to vertebrate
-    for entry in data:
-        if "vertebrate" in entry["organism"].lower():
-            return entry
-
+    # No match found — return None so caller can warn about defaulting
     return None
 
 
@@ -115,14 +111,16 @@ def generate_kozak(organism_tax_id: int, start_codon: str = "ATG") -> dict:
     """
     # E. coli and other prokaryotes use Shine-Dalgarno
     if organism_tax_id == 562:
-        consensus = _SHINE_DALGARNO["consensus"]
+        sequence = _SHINE_DALGARNO["consensus"]
         if start_codon != "ATG":
-            consensus = consensus.replace("ATG", start_codon)
+            idx = sequence.rfind("ATG")
+            if idx >= 0:
+                sequence = sequence[:idx] + start_codon + sequence[idx + 3:]
         return {
             "organism_tax_id": organism_tax_id,
             "organism": _SHINE_DALGARNO["organism"],
             "consensus": _SHINE_DALGARNO["consensus"],
-            "sequence": consensus,
+            "sequence": sequence,
             "notes": _SHINE_DALGARNO["notes"],
         }
 
@@ -144,9 +142,11 @@ def generate_kozak(organism_tax_id: int, start_codon: str = "ATG") -> dict:
     else:
         sequence = consensus.upper()
 
-    # Replace ATG with user-specified start codon if different
+    # Replace only the start codon (last ATG in Kozak context)
     if start_codon != "ATG":
-        sequence = sequence.replace("ATG", start_codon)
+        idx = sequence.upper().rfind("ATG")
+        if idx >= 0:
+            sequence = sequence[:idx] + start_codon + sequence[idx + 3:]
 
     organism_name = entry["organism"]
     return {

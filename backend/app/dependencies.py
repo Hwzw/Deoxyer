@@ -1,3 +1,4 @@
+import uuid
 from collections.abc import AsyncGenerator
 from functools import lru_cache
 
@@ -33,8 +34,12 @@ async def get_cache() -> AsyncGenerator[CacheService, None]:
 
 async def get_session_id(x_session_id: str = Header(...)) -> str:
     """Extract and validate the X-Session-ID header."""
-    if not x_session_id or len(x_session_id) != 36:
+    if not x_session_id:
         raise HTTPException(status_code=400, detail="Valid X-Session-ID header required")
+    try:
+        uuid.UUID(x_session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="X-Session-ID must be a valid UUID")
     return x_session_id
 
 

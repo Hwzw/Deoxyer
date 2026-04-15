@@ -87,7 +87,7 @@
     }
 
     const state = {
-      baseUrl: 'http://localhost:8000',
+      baseUrl: window.location.origin || 'http://localhost:8000',
       history: [],
       historyIndex: -1,
       workspace: {},
@@ -472,6 +472,9 @@
         const data = await api('GET', `/api/organisms/${args[1]}/codon-table`);
         if (flags.json) { printJson(data); return; }
         print(`Organism tax_id: ${data.organism_tax_id}  Source: ${data.source}`, 'info');
+        if (data.is_fallback && data.notes) {
+          print(`Warning: ${data.notes}`, 'warn');
+        }
         print('');
         for (const [aa, codons] of Object.entries(data.table)) {
           const codonStr = Object.entries(codons).map(([c, f]) => `${c}: ${Number(f).toFixed(3)}`).join('  ');
@@ -608,7 +611,10 @@
       if (flags.json) { printJson({ workspace_name: name, ...kozakObj }); return; }
       // Kozak sequences are short enough to show inline
       print(`Saved as '${name}' (${data.sequence.length} bp, ${data.organism}: ${data.sequence})`, 'success');
-      if (data.notes) print(`Notes: ${data.notes}`, 'dim');
+      if (data.notes) {
+        const isWarning = data.notes.toLowerCase().includes('default') || data.notes.toLowerCase().includes('not in database');
+        print(`Notes: ${data.notes}`, isWarning ? 'warn' : 'dim');
+      }
     }
 
     async function handlePromoter(args, flags) {
@@ -621,6 +627,7 @@
         const data = await api('GET', path);
         if (flags.json) { printJson(data); return; }
         print(`Found ${data.total} promoter(s)`, 'info');
+        if (data.message) print(data.message, 'warn');
         printTable(data.promoters, ['id', 'name', 'organism', 'strength', 'description']);
       } else if (verb === 'get') {
         if (!args[1]) { print('Usage: promoter get <promoter_id> [--name=X]', 'warn'); return; }

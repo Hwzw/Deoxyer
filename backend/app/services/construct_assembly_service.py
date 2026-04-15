@@ -17,19 +17,43 @@ def assemble_construct(elements: list[ConstructElementSchema]) -> dict:
     full_sequence = ""
     annotations = []
     current_pos = 0
+    prev_element = None
 
     for element in sorted_elements:
+        seq = element.sequence
+
+        # Handle Kozak→CDS junction: the Kozak includes ATG (start codon)
+        # plus optional context nucleotides after it. Truncate the Kozak at
+        # ATG and strip the CDS's leading ATG so the start codon appears once.
+        if element.element_type == "cds" and prev_element and prev_element.element_type == "kozak":
+            # Trim trailing post-ATG context from the already-appended Kozak
+            kozak_seq = prev_element.sequence.upper()
+            atg_idx = kozak_seq.rfind("ATG")
+            if atg_idx >= 0:
+                chars_after_atg = len(kozak_seq) - (atg_idx + 3)
+                if chars_after_atg > 0:
+                    full_sequence = full_sequence[:-chars_after_atg]
+                    current_pos -= chars_after_atg
+                    # Update the previous Kozak annotation
+                    annotations[-1]["end"] -= chars_after_atg
+                    annotations[-1]["length"] -= chars_after_atg
+
+            # Strip the leading ATG from the CDS (Kozak's ATG serves as start codon)
+            if seq.upper().startswith("ATG"):
+                seq = seq[3:]
+
         start = current_pos
-        full_sequence += element.sequence
-        end = current_pos + len(element.sequence)
+        full_sequence += seq
+        end = current_pos + len(seq)
         annotations.append({
             "type": element.element_type,
             "label": element.label,
             "start": start,
             "end": end,
-            "length": len(element.sequence),
+            "length": len(seq),
         })
         current_pos = end
+        prev_element = element
 
     return {
         "full_sequence": full_sequence,

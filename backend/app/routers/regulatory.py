@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.dependencies import get_session_id
 from app.schemas.regulatory import KozakConfig, KozakResult, PromoterSearchResult
 from app.services import kozak_service, promoter_service
 
@@ -11,12 +12,13 @@ async def search_promoters(
     organism: str = Query(..., description="Target organism"),
     gene: str | None = Query(None, description="Gene name filter"),
     limit: int = Query(20, ge=1, le=100),
+    session_id: str = Depends(get_session_id),
 ):
     return await promoter_service.search_promoters(organism, gene=gene, limit=limit)
 
 
 @router.get("/promoters/{promoter_id}")
-async def get_promoter(promoter_id: str):
+async def get_promoter(promoter_id: str, session_id: str = Depends(get_session_id)):
     return await promoter_service.get_promoter(promoter_id)
 
 
@@ -27,7 +29,7 @@ async def generate_kozak(config: KozakConfig):
         start_codon=config.start_codon,
     )
     return KozakResult(
-        organism=str(config.organism_tax_id),
+        organism=result["organism"],
         consensus=result["consensus"],
         sequence=result["sequence"],
         notes=result["notes"],

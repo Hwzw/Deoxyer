@@ -17,9 +17,25 @@ def test_assemble_basic_construct():
         ),
     ]
     result = assemble_construct(elements)
-    assert result["full_sequence"] == "AAAAGCCACCATGGATGCCCGGG"
+    # Kozak ATG is the start codon; CDS's leading ATG and Kozak's trailing G
+    # are removed so the codon appears exactly once.
+    assert result["full_sequence"] == "AAAAGCCACCATGCCCGGG"
     assert result["element_count"] == 3
     assert len(result["annotations"]) == 3
+
+
+def test_assemble_cds_without_kozak_keeps_atg():
+    """CDS not preceded by Kozak should keep its full sequence."""
+    elements = [
+        ConstructElementSchema(
+            element_type="promoter", label="CMV", sequence="AAAA", position=0
+        ),
+        ConstructElementSchema(
+            element_type="cds", label="GFP CDS", sequence="ATGCCCGGG", position=1
+        ),
+    ]
+    result = assemble_construct(elements)
+    assert result["full_sequence"] == "AAAAATGCCCGGG"
 
 
 def test_validate_missing_promoter():

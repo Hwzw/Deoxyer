@@ -1,13 +1,12 @@
 """JASPAR REST API client for transcription factor binding motifs."""
 
 from app.clients.base_client import BaseClient
-
-JASPAR_BASE_URL = "https://jaspar.elixir.no/api/v1"
+from app.config import settings
 
 
 class JASPARClient(BaseClient):
     def __init__(self):
-        super().__init__(base_url=JASPAR_BASE_URL)
+        super().__init__(base_url=settings.JASPAR_BASE_URL)
 
     async def search_profiles(
         self, query: str, tax_group: str | None = None, limit: int = 20

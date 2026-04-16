@@ -4,11 +4,13 @@ import json
 
 import redis.asyncio as aioredis
 
-# Default TTLs in seconds
-TTL_GENE = 86400  # 24 hours
-TTL_PROTEIN = 86400
-TTL_ORGANISM = 604800  # 7 days
-TTL_CODON_TABLE = 604800
+from app.config import settings
+
+# Default TTLs in seconds (from settings)
+TTL_GENE = settings.CACHE_TTL_GENE
+TTL_PROTEIN = settings.CACHE_TTL_PROTEIN
+TTL_ORGANISM = settings.CACHE_TTL_ORGANISM
+TTL_CODON_TABLE = settings.CACHE_TTL_CODON_TABLE
 
 
 class CacheService:

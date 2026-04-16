@@ -10,6 +10,7 @@ from fastapi import HTTPException
 logger = logging.getLogger(__name__)
 
 from app.clients import ncbi_client
+from app.config import settings
 from app.schemas.organism import CodonTableResponse, OrganismDetail, OrganismSearchResult
 from app.services.cache_service import CacheService, TTL_ORGANISM
 
@@ -83,7 +84,7 @@ def get_codon_table(tax_id: int) -> CodonTableResponse:
 
     is_fallback = table_name is None
     if is_fallback:
-        table = pct.get_codons_table("e_coli_316407")
+        table = pct.get_codons_table(settings.FALLBACK_CODON_TABLE)
     else:
         table = pct.get_codons_table(table_name)
 

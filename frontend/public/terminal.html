@@ -28,6 +28,15 @@
     .line.dim { color: #6e7681; }
     .line.bold { color: #f0f6fc; font-weight: bold; }
     .line.warn { color: #d29922; }
+    .codon-a { color: #79c0ff; }
+    .codon-b { color: #d2a8ff; }
+    .codon-c { color: #7ee787; }
+    .codon-start { color: #f85149; font-weight: bold; }
+    .codon-stop { color: #f85149; font-weight: bold; }
+    .seq-noncds { color: #8b949e; }
+    .seq-promoter { color: #6e7681; }
+    .seq-kozak { color: #9e8a6e; }
+    .seq-terminator { color: #7a6e81; }
     #input-area {
       display: flex;
       align-items: center;
@@ -137,6 +146,107 @@
       for (let i = 0; i < seq.length; i += 80) {
         print(seq.substring(i, i + 80));
       }
+    }
+
+    const STOP_CODONS = new Set(['TAA', 'TAG', 'TGA']);
+    const CODON_CLASSES = ['codon-a', 'codon-b', 'codon-c'];
+
+    /**
+     * Print a sequence with codon color-coding.
+     * If annotations are provided, only CDS regions get codon coloring;
+     * non-CDS regions (promoter, kozak, terminator) render in gray.
+     * Without annotations, the entire sequence is treated as coding.
+     */
+    function printCodons(seq, label, annotations) {
+      if (label) print(label + ':', 'info');
+      const upper = seq.toUpperCase();
+
+      // Map element type to CSS class
+      const REGION_CLASSES = {
+        promoter: 'seq-promoter',
+        kozak: 'seq-kozak',
+        terminator: 'seq-terminator',
+      };
+
+      // Find the annotation at a given position
+      function annotationAt(pos) {
+        if (!annotations || !annotations.length) return null;
+        for (const a of annotations) {
+          if (pos >= a.start && pos < a.end) return a;
+        }
+        return null;
+      }
+
+      // Build spans: CDS regions get codon coloring, others get subtle type-based color
+      const spans = [];
+      let i = 0;
+      while (i < upper.length) {
+        const ann = annotationAt(i);
+        const isCds = ann ? ann.type === 'cds' : (!annotations || !annotations.length);
+
+        if (isCds) {
+          // Find CDS start for reading frame alignment
+          const cdsStart = ann ? ann.start : 0;
+          const frameOffset = (i - cdsStart) % 3;
+          const codonStart = i - frameOffset;
+          const codonIdx = Math.floor((i - cdsStart) / 3);
+          const end = Math.min(codonStart + 3, upper.length);
+          const codonText = upper.substring(codonStart, end);
+          if (frameOffset === 0) {
+            let cls;
+            if (codonIdx === 0 && codonText === 'ATG') {
+              cls = 'codon-start';
+            } else if (STOP_CODONS.has(codonText)) {
+              cls = 'codon-stop';
+            } else {
+              cls = CODON_CLASSES[codonIdx % 3];
+            }
+            spans.push({ text: codonText, cls });
+          }
+          i = end;
+        } else {
+          // Non-CDS: collect chars that share the same annotation
+          const cls = (ann && REGION_CLASSES[ann.type]) || 'seq-noncds';
+          const regionEnd = ann ? ann.end : upper.length;
+          let j = Math.min(regionEnd, upper.length);
+          spans.push({ text: upper.substring(i, j), cls });
+          i = j;
+        }
+      }
+
+      // Render spans into lines of ~80 chars
+      const charsPerLine = 80;
+      let lineDiv = document.createElement('div');
+      lineDiv.className = 'line';
+      let lineLen = 0;
+
+      for (const s of spans) {
+        let text = s.text;
+        while (text.length > 0) {
+          const room = charsPerLine - lineLen;
+          if (text.length <= room) {
+            const span = document.createElement('span');
+            span.className = s.cls;
+            span.textContent = text;
+            lineDiv.appendChild(span);
+            lineLen += text.length;
+            text = '';
+          } else {
+            // Split at line boundary
+            const span = document.createElement('span');
+            span.className = s.cls;
+            span.textContent = text.substring(0, room);
+            lineDiv.appendChild(span);
+            text = text.substring(room);
+            termEl.appendChild(lineDiv);
+            lineDiv = document.createElement('div');
+            lineDiv.className = 'line';
+            lineLen = 0;
+          }
+        }
+      }
+      if (lineLen > 0) termEl.appendChild(lineDiv);
+      termEl.scrollTop = termEl.scrollHeight;
     }
 
     // ── UI refresh helpers ──────────────────────────────────────────
@@ -281,6 +391,11 @@
         promoter: [
           'promoter search <organism> [--gene=X]     Search promoters',
           'promoter get <id>                         Fetch & save to workspace',
+          '  [--name=X]',
+        ],
+        terminator: [
+          'terminator search <organism>              Search terminators',
+          'terminator get <id>                       Fetch & save to workspace',
           '  [--name=X]',
         ],
         project: [
@@ -584,7 +699,7 @@
 
       if (flags.seq && optSeq) {
         print('');
-        printSeq(optSeq);
+        printCodons(optSeq);
       }
     }
 
@@ -649,6 +764,41 @@
         print(`Saved as '${name}' (${len} bp${desc})`, 'success');
       } else {
         print('Usage: promoter search|get ...', 'warn');
+      }
+    }
+
+    async function handleTerminator(args, flags) {
+      const verb = args[0];
+      if (verb === 'search') {
+        const org = flags.organism || args.slice(1).join(' ');
+        if (!org) { print('Usage: terminator search <organism> [--organism=X]', 'warn'); return; }
+        let path = `/api/regulatory/terminators/search?organism=${encodeURIComponent(org)}`;
+        const data = await api('GET', path);
+        if (flags.json) { printJson(data); return; }
+        print(`Found ${data.total} terminator(s)`, 'info');
+        if (data.message) print(data.message, 'warn');
+        printTable(data.terminators, ['id', 'name', 'organism', 'efficiency', 'mechanism']);
+      } else if (verb === 'get') {
+        if (!args[1]) { print('Usage: terminator get <terminator_id> [--name=X]', 'warn'); return; }
+        const data = await api('GET', `/api/regulatory/terminators/${args[1]}`);
+        if (flags.json) { printJson(data); return; }
+
+        const name = flags.name || data.name || args[1];
+        wsStore(name, {
+          type: 'terminator',
+          sequence: data.sequence || '',
+          length: data.length || (data.sequence ? data.sequence.length : 0),
+          source: 'terminator-db',
+          label: data.notes || data.name || args[1],
+          efficiency: data.efficiency || null,
+          organism: data.organism || null,
+          mechanism: data.mechanism || null,
+        });
+        const desc = data.notes ? `, ${data.notes}` : '';
+        const len = data.length || (data.sequence ? data.sequence.length : 0);
+        print(`Saved as '${name}' (${len} bp${desc})`, 'success');
+      } else {
+        print('Usage: terminator search|get ...', 'warn');
       }
     }
 
@@ -897,7 +1047,7 @@
         }
         if (flags.seq && data.full_sequence) {
           print('');
-          printSeq(data.full_sequence, 'Assembled sequence');
+          printCodons(data.full_sequence, 'Assembled sequence', data.annotations);
         }
       } else {
         print('Usage: construct list|create|add|get|delete|assemble ...', 'warn');
@@ -975,10 +1125,10 @@
         if (obj.strength) print(`Strength: ${obj.strength}`);
         if (obj.notes) print(`Notes:    ${obj.notes}`);
         print('');
-        printSeq(obj.sequence);
+        if (obj.source === 'optimized') { printCodons(obj.sequence); } else { printSeq(obj.sequence); }
       } else {
         print(`${name} (${obj.length} ${wsUnit(obj.type)}, ${obj.type}):`, 'info');
-        printSeq(obj.sequence);
+        if (obj.source === 'optimized') { printCodons(obj.sequence); } else { printSeq(obj.sequence); }
       }
     }
 
@@ -1021,6 +1171,7 @@
       optimize: handleOptimize,
       kozak: handleKozak,
       promoter: handlePromoter,
+      terminator: handleTerminator,
       project: handleProject,
       construct: handleConstruct,
       ws: (a, f) => handleWorkspace(a, f),

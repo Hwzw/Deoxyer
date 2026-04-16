@@ -1,10 +1,12 @@
 import httpx
 
+from app.config import settings
+
 
 class BaseClient:
     """Base HTTP client with retry logic and rate limiting."""
 
-    def __init__(self, base_url: str, timeout: float = 30.0):
+    def __init__(self, base_url: str, timeout: float = settings.HTTP_TIMEOUT):
         self.base_url = base_url
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None

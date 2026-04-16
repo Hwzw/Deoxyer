@@ -23,24 +23,21 @@ def assemble_construct(elements: list[ConstructElementSchema]) -> dict:
         seq = element.sequence
 
         # Handle Kozak→CDS junction: the Kozak includes ATG (start codon)
-        # plus optional context nucleotides after it. Truncate the Kozak at
-        # ATG and strip the CDS's leading ATG so the start codon appears once.
+        # plus optional context nucleotides after it. Trim the Kozak back
+        # to just before the ATG so the ATG belongs to the CDS annotation
+        # (preserving correct reading frame for codon display).
         if element.element_type == "cds" and prev_element and prev_element.element_type == "kozak":
-            # Trim trailing post-ATG context from the already-appended Kozak
             kozak_seq = prev_element.sequence.upper()
             atg_idx = kozak_seq.rfind("ATG")
             if atg_idx >= 0:
-                chars_after_atg = len(kozak_seq) - (atg_idx + 3)
-                if chars_after_atg > 0:
-                    full_sequence = full_sequence[:-chars_after_atg]
-                    current_pos -= chars_after_atg
-                    # Update the previous Kozak annotation
-                    annotations[-1]["end"] -= chars_after_atg
-                    annotations[-1]["length"] -= chars_after_atg
+                # Remove everything from ATG onward from the kozak
+                chars_from_atg = len(kozak_seq) - atg_idx
+                full_sequence = full_sequence[:-chars_from_atg]
+                current_pos -= chars_from_atg
+                annotations[-1]["end"] -= chars_from_atg
+                annotations[-1]["length"] -= chars_from_atg
 
-            # Strip the leading ATG from the CDS (Kozak's ATG serves as start codon)
-            if seq.upper().startswith("ATG"):
-                seq = seq[3:]
+            # Keep the CDS sequence intact (including its ATG)
 
         start = current_pos
         full_sequence += seq
@@ -86,5 +83,9 @@ def validate_construct(elements: list[ConstructElementSchema]) -> list[str]:
     # Check that promoter comes first
     if element_types and element_types[0] != "promoter":
         warnings.append("Construct should begin with a promoter")
+
+    # Check that construct ends with a terminator
+    if element_types and element_types[-1] != "terminator":
+        warnings.append("Construct should end with a terminator")
 
     return warnings

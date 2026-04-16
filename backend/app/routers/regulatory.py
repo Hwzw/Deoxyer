@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, Query
 
 from app.dependencies import get_session_id
-from app.schemas.regulatory import KozakConfig, KozakResult, PromoterSearchResult
-from app.services import kozak_service, promoter_service
+from app.schemas.regulatory import KozakConfig, KozakResult, PromoterSearchResult, TerminatorSearchResult
+from app.services import kozak_service, promoter_service, terminator_service
 
 router = APIRouter()
 
@@ -20,6 +20,20 @@ async def search_promoters(
 @router.get("/promoters/{promoter_id}")
 async def get_promoter(promoter_id: str, session_id: str = Depends(get_session_id)):
     return await promoter_service.get_promoter(promoter_id)
+
+
+@router.get("/terminators/search", response_model=TerminatorSearchResult)
+async def search_terminators(
+    organism: str = Query(..., description="Target organism"),
+    limit: int = Query(20, ge=1, le=100),
+    session_id: str = Depends(get_session_id),
+):
+    return await terminator_service.search_terminators(organism, limit=limit)
+
+
+@router.get("/terminators/{terminator_id}")
+async def get_terminator(terminator_id: str, session_id: str = Depends(get_session_id)):
+    return await terminator_service.get_terminator(terminator_id)
 
 
 @router.post("/kozak", response_model=KozakResult)

@@ -1,13 +1,12 @@
 """Ensembl REST API client."""
 
 from app.clients.base_client import BaseClient
-
-ENSEMBL_BASE_URL = "https://rest.ensembl.org"
+from app.config import settings
 
 
 class EnsemblClient(BaseClient):
     def __init__(self):
-        super().__init__(base_url=ENSEMBL_BASE_URL)
+        super().__init__(base_url=settings.ENSEMBL_BASE_URL)
 
     async def get_sequence(self, stable_id: str, seq_type: str = "cdna") -> dict:
         response = await self.get(

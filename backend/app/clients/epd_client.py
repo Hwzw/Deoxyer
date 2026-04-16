@@ -1,13 +1,12 @@
 """EPD (Eukaryotic Promoter Database) client."""
 
 from app.clients.base_client import BaseClient
-
-EPD_BASE_URL = "https://epd.expasy.org/api"
+from app.config import settings
 
 
 class EPDClient(BaseClient):
     def __init__(self):
-        super().__init__(base_url=EPD_BASE_URL)
+        super().__init__(base_url=settings.EPD_BASE_URL)
 
     async def search_promoters(
         self, organism: str, gene: str | None = None, limit: int = 20

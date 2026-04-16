@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from app.clients.epd_client import epd_client
+from app.config import settings
 from app.schemas.regulatory import PromoterInfo, PromoterSearchResult
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
@@ -50,9 +51,9 @@ def _load_promoters() -> list[PromoterInfo]:
             if score:
                 try:
                     s = int(score)
-                    if s >= 80:
+                    if s >= settings.PROMOTER_STRONG_THRESHOLD:
                         strength = "strong"
-                    elif s >= 40:
+                    elif s >= settings.PROMOTER_MODERATE_THRESHOLD:
                         strength = "moderate"
                     else:
                         strength = "weak"

@@ -9,6 +9,7 @@ Synthetic biology construct designer for heterologous protein expression. Design
 - **Codon Optimization** — Frequency-based, harmonized, or balanced optimization via DNAchisel with GC content and restriction site constraints
 - **Kozak Sequence Generation** — Species-specific translation initiation contexts (vertebrate, yeast, plant, Drosophila, E. coli)
 - **Promoter Selection** — Browse synthetic promoters (CMV, EF1a, GAL1, CaMV 35S, etc.) and search the Eukaryotic Promoter Database
+- **Terminator Selection** — Search transcription terminators for bacteria, yeast, mammalian, plant, and fungal systems (B0015, SV40 poly-A, CYC1, NOS, etc.)
 - **Construct Assembly** — Build constructs from promoter → Kozak → CDS → terminator with validation and assembly
 - **Project Management** — Save, organize, and revisit construct designs
 - **Session Isolation** — Each browser session gets its own workspace; projects and data are scoped per user
@@ -126,6 +127,8 @@ python -m pytest
 | `optimize <seq> --organism=<tax_id>` | Run codon optimization |
 | `kozak <tax_id>` | Generate Kozak sequence |
 | `promoter search <organism>` | Search promoters |
+| `terminator search <organism>` | Search terminators |
+| `terminator get <id>` | Fetch & save terminator to workspace |
 | `project list` | List your projects |
 | `project create <name>` | Create a new project |
 | `construct create <name> --project=<id>` | Create a construct |

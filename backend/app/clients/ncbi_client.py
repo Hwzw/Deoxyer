@@ -16,8 +16,8 @@ Entrez.email = settings.NCBI_EMAIL
 if settings.NCBI_API_KEY:
     Entrez.api_key = settings.NCBI_API_KEY
 
-# Rate limiting semaphore (10 concurrent with API key, 3 without)
-_max_concurrent = 10 if settings.NCBI_API_KEY else 3
+# Rate limiting semaphore
+_max_concurrent = settings.NCBI_CONCURRENT_WITH_KEY if settings.NCBI_API_KEY else settings.NCBI_CONCURRENT_WITHOUT_KEY
 _semaphore = asyncio.Semaphore(_max_concurrent)
 
 

@@ -1,13 +1,12 @@
 """UniProt REST API v2 client."""
 
 from app.clients.base_client import BaseClient
-
-UNIPROT_BASE_URL = "https://rest.uniprot.org"
+from app.config import settings
 
 
 class UniProtClient(BaseClient):
     def __init__(self):
-        super().__init__(base_url=UNIPROT_BASE_URL)
+        super().__init__(base_url=settings.UNIPROT_BASE_URL)
 
     async def search_proteins(
         self, query: str, organism: str | None = None, limit: int = 20

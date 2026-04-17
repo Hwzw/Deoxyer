@@ -37,6 +37,13 @@
     .seq-promoter { color: #6e7681; }
     .seq-kozak { color: #9e8a6e; }
     .seq-terminator { color: #7a6e81; }
+    .clickable-id {
+      text-decoration: underline;
+      text-decoration-style: dotted;
+      cursor: pointer;
+      color: #58a6ff;
+    }
+    .clickable-id:hover { color: #79c0ff; text-decoration-style: solid; }
     #input-area {
       display: flex;
       align-items: center;
@@ -123,7 +130,7 @@
     }
 
 
-    function printTable(rows, columns) {
+    function printTable(rows, columns, clickable) {
       if (!rows || rows.length === 0) { print('No results.', 'dim'); return; }
       const widths = {};
       columns.forEach(c => widths[c] = c.length);
@@ -136,9 +143,32 @@
       print(header, 'bold');
       print(sep, 'dim');
       rows.forEach(r => {
-        const line = columns.map(c => String(r[c] ?? '').substring(0, 60).padEnd(widths[c])).join('  ');
-        print(line);
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'line';
+        columns.forEach((c, i) => {
+          if (i > 0) rowDiv.appendChild(document.createTextNode('  '));
+          const raw = String(r[c] ?? '').substring(0, 60);
+          const padded = raw.padEnd(widths[c]);
+          const tmpl = clickable && clickable[c];
+          if (tmpl && raw) {
+            const span = document.createElement('span');
+            span.className = 'clickable-id';
+            span.textContent = raw;
+            span.addEventListener('click', () => {
+              cmdEl.value = tmpl.replace('<id>', raw);
+              cmdEl.focus();
+              cmdEl.setSelectionRange(cmdEl.value.length, cmdEl.value.length);
+            });
+            rowDiv.appendChild(span);
+            const pad = padded.length - raw.length;
+            if (pad > 0) rowDiv.appendChild(document.createTextNode(' '.repeat(pad)));
+          } else {
+            rowDiv.appendChild(document.createTextNode(padded));
+          }
+        });
+        termEl.appendChild(rowDiv);
       });
+      termEl.scrollTop = termEl.scrollHeight;
     }
 
     function printSeq(seq, label) {
@@ -455,6 +485,11 @@
         print('  ' + k + ':', 'info');
         sections[k].forEach(l => print('    ' + l));
       });
+      print('');
+      print('Navigation:', 'info');
+      print('  cd <name>                  Enter project (from root) or construct (from project)');
+      print('  cd ..                      Go up one level');
+      print('  cd /                       Return to root');
       print('');
       print('Utility:', 'info');
       print('  status                     Show active project & construct');
@@ -811,7 +846,7 @@
           ...p,
           active: state.activeProject && state.activeProject.id === p.id ? '→' : '',
         }));
-        printTable(rows, ['active', 'id', 'name', 'description', 'created_at']);
+        printTable(rows, ['active', 'id', 'name', 'description', 'created_at'], { id: 'project use <id>' });
       } else if (verb === 'create') {
         const name = args.slice(1).join(' ');
         if (!name) { print('Usage: project create <name> [--desc=X]', 'warn'); return; }
@@ -826,9 +861,7 @@
         print(`Active project set to '${data.name}'`, 'dim');
       } else if (verb === 'use') {
         if (!args[1]) { print('Usage: project use <id>', 'warn'); return; }
-        const data = await api('GET', `/api/projects/${args[1]}`);
-        state.activeProject = { id: data.id, name: data.name };
-        refreshUI();
+        const data = await useProject(args[1]);
         if (flags.json) { printJson({ active_project: state.activeProject }); return; }
         print(`Active project: ${data.name} (${data.id})`, 'success');
       } else if (verb === 'get') {
@@ -843,7 +876,7 @@
         if (data.constructs && data.constructs.length) {
           print('');
           print('Constructs:', 'info');
-          printTable(data.constructs, ['id', 'name', 'organism_tax_id', 'updated_at']);
+          printTable(data.constructs, ['id', 'name', 'organism_tax_id', 'updated_at'], { id: 'construct use <id>' });
         }
       } else if (verb === 'update') {
         const id = args[1] || (state.activeProject && state.activeProject.id);
@@ -909,7 +942,7 @@
           elements: c.elements ? c.elements.length : 0,
           created_at: c.created_at,
         }));
-        printTable(rows, ['active', 'id', 'name', 'organism', 'elements', 'created_at']);
+        printTable(rows, ['active', 'id', 'name', 'organism', 'elements', 'created_at'], { id: 'construct use <id>' });
       } else if (verb === 'create') {
         const name = args.slice(1).join(' ');
         const projectId = flags.project || (state.activeProject && state.activeProject.id);
@@ -934,9 +967,7 @@
         print(`Next: construct add <workspace_name> --as=cds|promoter|...`, 'dim');
       } else if (verb === 'use') {
         if (!args[1]) { print('Usage: construct use <id>', 'warn'); return; }
-        const data = await api('GET', `/api/constructs/${args[1]}`);
-        state.activeConstruct = { id: data.id, name: data.name };
-        refreshUI();
+        const data = await useConstruct(args[1]);
         if (flags.json) { printJson({ active_construct: state.activeConstruct }); return; }
         print(`Active construct: ${data.name} (${data.id})`, 'success');
       } else if (verb === 'add') {
@@ -1161,6 +1192,101 @@
       refreshUI();
     }
 
+    // ── Navigation helpers ──────────────────────────────────────────
+    async function useProject(id) {
+      const data = await api('GET', `/api/projects/${id}`);
+      state.activeProject = { id: data.id, name: data.name };
+      state.activeConstruct = null;
+      refreshUI();
+      return data;
+    }
+
+    async function useConstruct(id) {
+      const data = await api('GET', `/api/constructs/${id}`);
+      state.activeConstruct = { id: data.id, name: data.name };
+      refreshUI();
+      return data;
+    }
+
+    async function handleCd(args, flags) {
+      const target = args[0];
+
+      if (!target || target === '/') {
+        state.activeProject = null;
+        state.activeConstruct = null;
+        refreshUI();
+        if (flags.json) { printJson({ active_project: null, active_construct: null }); return; }
+        print('Returned to root.', 'dim');
+        return;
+      }
+
+      if (target === '..') {
+        if (state.activeConstruct) {
+          state.activeConstruct = null;
+          refreshUI();
+          if (flags.json) { printJson({ active_project: state.activeProject, active_construct: null }); return; }
+          print(`Left construct. Active project: ${state.activeProject.name}`, 'dim');
+        } else if (state.activeProject) {
+          state.activeProject = null;
+          refreshUI();
+          if (flags.json) { printJson({ active_project: null, active_construct: null }); return; }
+          print('Left project. At root.', 'dim');
+        } else {
+          print('Already at root.', 'warn');
+        }
+        return;
+      }
+
+      const name = args.join(' ');
+      const needle = name.toLowerCase();
+
+      if (state.activeConstruct) {
+        print("Already in a construct. Use 'cd ..' first.", 'warn');
+        return;
+      }
+
+      if (state.activeProject) {
+        const list = await api('GET', `/api/constructs/?project_id=${encodeURIComponent(state.activeProject.id)}`);
+        const matches = list.filter(c => c.name.toLowerCase() === needle);
+        if (matches.length === 0) {
+          print(`No construct named '${name}' in project '${state.activeProject.name}'.`, 'error');
+        } else if (matches.length > 1) {
+          print(`Ambiguous: ${matches.length} constructs named '${name}'. Use 'construct use <id>' to disambiguate.`, 'warn');
+          const rows = matches.map(c => ({
+            id: c.id,
+            name: c.name,
+            organism: c.organism_tax_id || '—',
+            created_at: c.created_at,
+          }));
+          printTable(rows, ['id', 'name', 'organism', 'created_at'], { id: 'construct use <id>' });
+        } else {
+          const data = await useConstruct(matches[0].id);
+          if (flags.json) { printJson({ active_construct: state.activeConstruct }); return; }
+          print(`Active construct: ${data.name} (${data.id})`, 'success');
+        }
+        return;
+      }
+
+      const list = await api('GET', '/api/projects/');
+      const matches = list.filter(p => p.name.toLowerCase() === needle);
+      if (matches.length === 0) {
+        print(`No project named '${name}'.`, 'error');
+      } else if (matches.length > 1) {
+        print(`Ambiguous: ${matches.length} projects named '${name}'. Use 'project use <id>' to disambiguate.`, 'warn');
+        const rows = matches.map(p => ({
+          id: p.id,
+          name: p.name,
+          description: p.description || '',
+          created_at: p.created_at,
+        }));
+        printTable(rows, ['id', 'name', 'description', 'created_at'], { id: 'project use <id>' });
+      } else {
+        const data = await useProject(matches[0].id);
+        if (flags.json) { printJson({ active_project: state.activeProject }); return; }
+        print(`Active project: ${data.name} (${data.id})`, 'success');
+      }
+    }
+
     // ── Command dispatch ────────────────────────────────────────────
     const commands = {
       help: (a, f) => handleHelp(a, f),
@@ -1174,6 +1300,7 @@
       terminator: handleTerminator,
       project: handleProject,
       construct: handleConstruct,
+      cd: handleCd,
       ws: (a, f) => handleWorkspace(a, f),
       workspace: (a, f) => handleWorkspace(a, f),
       show: handleShow,

@@ -9,6 +9,7 @@ from app.routers import (
     constructs,
     genes,
     health,
+    misc,
     organisms,
     optimization,
     projects,
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
         optimization.router, prefix="/api/optimization", tags=["optimization"]
     )
     application.include_router(regulatory.router, prefix="/api/regulatory", tags=["regulatory"])
+    application.include_router(misc.router, prefix="/api/misc", tags=["misc"])
     application.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 
     @application.get("/", include_in_schema=False)

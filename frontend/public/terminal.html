@@ -46,6 +46,7 @@
     .seq-promoter { color: #6e7681; }
     .seq-kozak { color: #9e8a6e; }
     .seq-terminator { color: #7a6e81; }
+    .digest-cut { color: #f85149; font-weight: bold; }
     .clickable-id {
       text-decoration: underline;
       text-decoration-style: dotted;
@@ -53,6 +54,27 @@
       color: #58a6ff;
     }
     .clickable-id:hover { color: #79c0ff; text-decoration-style: solid; }
+    .ws-insert-cell {
+      display: inline-block;
+      width: 3ch;
+      text-align: left;
+    }
+    .ws-insert-btn {
+      display: inline-block;
+      width: 2ch;
+      text-align: center;
+      cursor: pointer;
+      color: #6e7681;
+      border: 1px solid #30363d;
+      border-radius: 3px;
+      background: transparent;
+      font-family: inherit;
+      font-size: inherit;
+      line-height: 1;
+      padding: 0;
+      user-select: none;
+    }
+    .ws-insert-btn:hover { color: #3fb950; border-color: #3fb950; }
     #input-area {
       display: flex;
       align-items: center;
@@ -139,7 +161,7 @@
     }
 
 
-    function printTable(rows, columns, clickable) {
+    function printTable(rows, columns, clickable, insertCol) {
       if (!rows || rows.length === 0) { print('No results.', 'dim'); return; }
       const widths = {};
       columns.forEach(c => widths[c] = c.length);
@@ -147,13 +169,33 @@
         const val = String(r[c] ?? '');
         if (val.length > widths[c]) widths[c] = Math.min(val.length, 60);
       }));
-      const header = columns.map(c => c.padEnd(widths[c])).join('  ');
-      const sep = columns.map(c => '─'.repeat(widths[c])).join('──');
+      const insWidth = 3;
+      const insPrefix = insertCol ? ' '.repeat(insWidth) + '  ' : '';
+      const insSepPrefix = insertCol ? '─'.repeat(insWidth) + '──' : '';
+      const header = insPrefix + columns.map(c => c.padEnd(widths[c])).join('  ');
+      const sep = insSepPrefix + columns.map(c => '─'.repeat(widths[c])).join('──');
       print(header, 'bold');
       print(sep, 'dim');
       rows.forEach(r => {
         const rowDiv = document.createElement('div');
         rowDiv.className = 'line';
+        if (insertCol) {
+          const cell = document.createElement('span');
+          cell.className = 'ws-insert-cell';
+          const insertValue = String(r[insertCol] ?? '');
+          if (insertValue) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'ws-insert-btn';
+            btn.textContent = '+';
+            btn.setAttribute('aria-label', `Insert ${insertValue}`);
+            btn.title = `Insert ${insertValue}`;
+            btn.addEventListener('click', () => appendWsToCmd(insertValue));
+            cell.appendChild(btn);
+          }
+          rowDiv.appendChild(cell);
+          rowDiv.appendChild(document.createTextNode('  '));
+        }
         columns.forEach((c, i) => {
           if (i > 0) rowDiv.appendChild(document.createTextNode('  '));
           const raw = String(r[c] ?? '').substring(0, 60);
@@ -204,7 +246,7 @@
      * non-CDS regions (promoter, kozak, terminator) render in gray.
      * Without annotations, the entire sequence is treated as coding.
      */
-    function printCodons(seq, label, annotations) {
+    function printCodons(seq, label, annotations, cutPositions) {
       if (label) print(label + ':', 'info');
       const upper = seq.toUpperCase();
 
@@ -259,7 +301,7 @@
             } else {
               cls = palette[codonIdx % 3];
             }
-            spans.push({ text: codonText, cls });
+            spans.push({ text: codonText, cls, pos: codonStart });
           }
           i = end;
         } else {
@@ -267,9 +309,43 @@
           const cls = (ann && REGION_CLASSES[ann.type]) || 'seq-noncds';
           const regionEnd = ann ? ann.end : upper.length;
           let j = Math.min(regionEnd, upper.length);
-          spans.push({ text: upper.substring(i, j), cls });
+          spans.push({ text: upper.substring(i, j), cls, pos: i });
           i = j;
         }
+      }
+
+      // Overlay cut bars by splitting spans at each cut position
+      if (cutPositions && cutPositions.length) {
+        const sorted = Array.from(new Set(cutPositions))
+          .filter(c => c >= 0 && c <= upper.length)
+          .sort((a, b) => a - b);
+        const out = [];
+        let cutIdx = 0;
+        for (const s of spans) {
+          let text = s.text;
+          let pos = s.pos;
+          while (cutIdx < sorted.length && sorted[cutIdx] < pos + text.length) {
+            const cut = sorted[cutIdx];
+            if (cut <= pos) {
+              if (cut === pos) out.push({ text: '│', cls: 'digest-cut' });
+              cutIdx++;
+              continue;
+            }
+            const splitAt = cut - pos;
+            out.push({ text: text.substring(0, splitAt), cls: s.cls });
+            out.push({ text: '│', cls: 'digest-cut' });
+            text = text.substring(splitAt);
+            pos = cut;
+            cutIdx++;
+          }
+          if (text.length > 0) out.push({ text, cls: s.cls });
+        }
+        while (cutIdx < sorted.length && sorted[cutIdx] === upper.length) {
+          out.push({ text: '│', cls: 'digest-cut' });
+          cutIdx++;
+        }
+        spans.length = 0;
+        for (const s of out) spans.push(s);
       }
 
       // Render spans into lines of ~80 chars
@@ -309,8 +385,9 @@
 
     // Benchling-style in-series diagram. Arrow widths scale with log(length)
     // so short features are not dwarfed by a CDS an order of magnitude longer.
-    function printConstructDiagram(annotations) {
-      if (!annotations || !annotations.length) return;
+    function buildDiagramCells(annotations, options) {
+      const scale = (options && options.scale) || 1;
+      const flat = !!(options && options.flat);
       const NON_CDS_CLASSES = {
         promoter: 'seq-promoter',
         kozak: 'seq-kozak',
@@ -318,14 +395,18 @@
         stop_codon: 'codon-stop',
       };
       const K = 3;
-      const MIN_W = 4, MAX_W = 60;
+      const MIN_W = Math.max(2, Math.round(4 * scale));
+      const MAX_W = Math.max(MIN_W, Math.round(60 * scale));
       let cdsSeen = 0;
-      const cells = annotations.map(a => {
+      let colOffset = 0;
+      return annotations.map(a => {
         const len = Math.max(2, a.length || (a.end - a.start));
-        const w = Math.max(MIN_W, Math.min(MAX_W, Math.round(Math.log(len) * K)));
+        const raw = Math.round(Math.log(len) * K * scale);
+        const w = Math.max(MIN_W, Math.min(MAX_W, raw));
         let arrow;
         if (a.type === 'terminator') arrow = '━'.repeat(w - 1) + '┫';
         else if (a.type === 'promoter') arrow = '┗' + '━'.repeat(w - 2) + '▶';
+        else if (flat) arrow = '━'.repeat(w);
         else if (a.type === 'kozak') arrow = '━'.repeat(w - 1) + '▷';
         else arrow = '━'.repeat(w - 1) + '▶';
         let cls;
@@ -335,14 +416,26 @@
         } else {
           cls = NON_CDS_CLASSES[a.type] || '';
         }
-        return {
+        const bpLen = a.length || (a.end - a.start);
+        const cell = {
           w,
           arrow,
           name: a.label || a.type || '',
-          bp: (a.length || (a.end - a.start)) + ' bp',
+          bp: bpLen + ' bp',
           cls,
+          start: a.start,
+          end: a.end,
+          length: bpLen,
+          colStart: colOffset,
         };
+        colOffset += w;
+        return cell;
       });
+    }
+
+    function printConstructDiagram(annotations) {
+      if (!annotations || !annotations.length) return;
+      const cells = buildDiagramCells(annotations);
 
       const center = (text, w) => {
         if (text.length > w) return text.substring(0, Math.max(0, w - 1)) + '…';
@@ -371,6 +464,88 @@
       bpDiv.className = 'line dim';
       bpDiv.textContent = '  ' + cells.map(c => center(c.bp, c.w)).join('');
       termEl.appendChild(bpDiv);
+
+      termEl.scrollTop = termEl.scrollHeight;
+    }
+
+    // Render the construct arrow diagram once per enzyme, with a vertical bar
+    // overlaid at each cut site and the bp position labelled below.
+    function printDigestDiagram(enzymeInfos, annotations, sequenceLength) {
+      const effectiveAnnotations = (annotations && annotations.length)
+        ? annotations
+        : [{ type: 'custom', start: 0, end: sequenceLength, length: sequenceLength, label: '' }];
+      const cells = buildDiagramCells(effectiveAnnotations, { scale: 0.5, flat: true });
+      const totalWidth = cells.reduce((s, c) => s + c.w, 0);
+
+      function bpToCol(bp) {
+        for (const c of cells) {
+          if (bp >= c.start && bp < c.end) {
+            const frac = c.length > 0 ? (bp - c.start) / c.length : 0;
+            return c.colStart + Math.min(c.w - 1, Math.floor(frac * c.w));
+          }
+        }
+        return totalWidth - 1;
+      }
+
+      enzymeInfos.forEach((e, idx) => {
+        if (idx > 0) print('');
+        const cutCount = e.cut_count != null ? e.cut_count : (e.cut_positions ? e.cut_positions.length : 0);
+        const meta = `${e.site}, ${e.overhang}`;
+        if (cutCount === 0) {
+          print(`${e.name} (${meta}): No cuts`, 'dim');
+          return;
+        }
+        print(`${e.name} (${meta}): ${cutCount1} cut${cutCount === 1 ? '' : 's'}`, 'info');
+
+        const colChar = new Array(totalWidth).fill(' ');
+        const colClass = new Array(totalWidth).fill('');
+        for (const c of cells) {
+          for (let i = 0; i < c.w; i++) {
+            colChar[c.colStart + i] = c.arrow[i] || '━';
+            colClass[c.colStart + i] = c.cls || '';
+          }
+        }
+
+        const cuts = [...e.cut_positions].sort((a, b) => a - b);
+        const barCols = cuts.map(bpToCol);
+        for (const col of barCols) {
+          if (col >= 0 && col < totalWidth) {
+            colChar[col] = '│';
+            colClass[col] = 'digest-cut';
+          }
+        }
+
+        const arrowDiv = document.createElement('div');
+        arrowDiv.className = 'line';
+        arrowDiv.appendChild(document.createTextNode('  '));
+        let i = 0;
+        while (i < totalWidth) {
+          let j = i;
+          while (j < totalWidth && colClass[j] === colClass[i]) j++;
+          const span = document.createElement('span');
+          if (colClass[i]) span.className = colClass[i];
+          span.textContent = colChar.slice(i, j).join('');
+          arrowDiv.appendChild(span);
+          i = j;
+        }
+        termEl.appendChild(arrowDiv);
+
+        const labelRow = new Array(totalWidth + 16).fill(' ');
+        let cursor = 0;
+        for (let k = 0; k < barCols.length; k++) {
+          const label = String(cuts[k] + 1);
+          let start = barCols[k];
+          if (start < cursor) start = cursor;
+          for (let m = 0; m < label.length; m++) {
+            if (start + m < labelRow.length) labelRow[start + m] = label[m];
+          }
+          cursor = start + label.length + 1;
+        }
+        const bpDiv = document.createElement('div');
+        bpDiv.className = 'line dim';
+        bpDiv.textContent = '  ' + labelRow.join('').replace(/\s+$/, '');
+        termEl.appendChild(bpDiv);
+      });
 
       termEl.scrollTop = termEl.scrollHeight;
     }
@@ -491,9 +666,8 @@
         ],
         protein: [
           'protein search <query> [--organism=X]     Search UniProt/NCBI',
-          'protein get <accession>                   Get protein details',
-          'protein sequence <accession>              Fetch & save to workspace',
-          '  [--name=X] [--seq]',
+          'protein get <accession> [<accession> ...]  Fetch & save sequence(s) to workspace',
+          '  [--name=X] (single accession only) [--seq]',
         ],
         organism: [
           'organism search <query>                   Search NCBI Taxonomy',
@@ -501,7 +675,7 @@
           'organism codons <tax_id>                  Get codon usage table',
         ],
         optimize: [
-          'optimize <name|accession> <tax_id>',
+          'optimize <name|accession> [<name|accession> ...] <tax_id>',
           '  Accepts a workspace name or protein accession.',
           '  Auto-fetches protein if not in workspace.',
           '  Result saved as <name>-opt.',
@@ -528,6 +702,12 @@
           'terminator get <id>                       Fetch & save to workspace',
           '  [--name=X]',
         ],
+        misc: [
+          'misc search [<query>]                      Search tags, linkers, origins, markers, etc.',
+          '  [--type=protein|dna]                     Filter by sequence type',
+          'misc get <id_or_name> [<id_or_name> ...]   Fetch & save to workspace',
+          '  [--name=X] (single only)',
+        ],
         project: [
           'project list                              List all projects',
           'project create <name> [--desc=X]          Create & activate project',
@@ -552,7 +732,8 @@
           'construct delete [id]                      Delete construct',
           'construct assemble [id] [--seq]            Assemble full sequence',
           'construct export [id] [--format=genbank]   Download .gb for Benchling',
-          'construct digest [id] <enz1> [enz2 ...]    Restriction digest (e.g. EcoRI BamHI)',
+          'construct digest [id] <enz1> [enz2 ...] [--seq]',
+          '  Restriction digest (e.g. EcoRI BamHI). --seq shows the full sequence with cut bars.',
           '',
           '  Omit [id] to use the active construct.',
         ],
@@ -566,6 +747,14 @@
           'rename <old> <new>                        Rename workspace object',
           'rename construct <new_name>               Rename the active construct',
           'rename project <new_name>                 Rename the active project',
+        ],
+        slice: [
+          'slice <name> <START>...<END>              Extract subsequence (inclusive)',
+          'slice <name> --from=ATC --to=GCC          Flag form (equivalent)',
+          '  [--name=X]                              Also save result to workspace',
+          '  [--rc]                                  Also search reverse complement (DNA)',
+          '',
+          '  Matching is case-insensitive. First occurrence wins; ambiguity is warned.',
         ],
       };
 
@@ -629,7 +818,7 @@
         if (flags.organism) path += `&organism=${encodeURIComponent(flags.organism)}`;
         const data = await api('GET', path);
         if (flags.json) { printJson(data); return; }
-        printTable(data, ['gene_id', 'symbol', 'description', 'organism']);
+        printTable(data, ['gene_id', 'symbol', 'description', 'organism'], null, 'gene_id');
       } else if (verb === 'get') {
         if (!args[1]) { print('Usage: gene get <gene_id>', 'warn'); return; }
         const data = await api('GET', `/api/genes/${args[1]}`);
@@ -675,38 +864,53 @@
         if (flags.organism) path += `&organism=${encodeURIComponent(flags.organism)}`;
         const data = await api('GET', path);
         if (flags.json) { printJson(data); return; }
-        printTable(data, ['accession', 'name', 'organism', 'length', 'source']);
+        printTable(data, ['accession', 'name', 'organism', 'length', 'source'], null, 'accession');
       } else if (verb === 'get') {
-        if (!args[1]) { print('Usage: protein get <accession>', 'warn'); return; }
-        const data = await api('GET', `/api/proteins/${args[1]}`);
-        if (flags.json) { printJson(data); return; }
-        printJson(data);
-        print(`To save sequence to workspace: protein sequence ${args[1]} --name=<name>`, 'dim');
-        return;
-      } else if (verb === 'sequence') {
-        if (!args[1]) { print('Usage: protein sequence <accession> [--name=X] [--seq]', 'warn'); return; }
-        const accession = args[1];
-        const data = await api('GET', `/api/proteins/${accession}/sequence`);
-
-        const name = flags.name || accession;
-        const wsObj = {
-          type: 'protein',
-          sequence: data.sequence,
-          length: data.length || data.sequence.length,
-          source: data.source || 'uniprot',
-          label: data.name || accession,
-          accession: data.accession || accession,
-        };
-        wsStore(name, wsObj);
-        if (flags.json) { printJson({ workspace_name: name, ...wsObj }); return; }
-        const labelPart = data.name ? `, ${data.name}` : '';
-        print(`Saved as '${name}' (${data.sequence.length} aa${labelPart})`, 'success');
-        if (flags.seq) {
-          print('');
-          printSeq(data.sequence);
+        const accessions = args.slice(1);
+        if (accessions.length === 0) {
+          print('Usage: protein get <accession> [<accession> ...] [--name=X] [--seq]', 'warn');
+          return;
+        }
+        if (flags.name && accessions.length > 1) {
+          print('--name can only be used with a single accession.', 'warn');
+          return;
+        }
+        const results = [];
+        for (const accession of accessions) {
+          try {
+            const data = await api('GET', `/api/proteins/${accession}/sequence`);
+            const name = (accessions.length === 1 && flags.name) ? flags.name : accession;
+            const wsObj = {
+              type: 'protein',
+              sequence: data.sequence,
+              length: data.length || data.sequence.length,
+              source: data.source || 'uniprot',
+              label: data.name || accession,
+              accession: data.accession || accession,
+            };
+            wsStore(name, wsObj);
+            results.push({ accession, name, wsObj, data, ok: true });
+            if (!flags.json) {
+              const labelPart = data.name ? `, ${data.name}` : '';
+              print(`Saved as '${name}' (${data.sequence.length} aa${labelPart})`, 'success');
+              if (flags.seq) {
+                print('');
+                printSeq(data.sequence);
+                print('');
+              }
+            }
+          } catch (e) {
+            results.push({ accession, ok: false, error: e.message });
+            if (!flags.json) print(`Failed '${accession}': ${e.message}`, 'error');
+          }
+        }
+        if (flags.json) {
+          printJson(results.map(r => r.ok
+            ? { workspace_name: r.name, ...r.wsObj }
+            : { accession: r.accession, error: r.error }));
         }
       } else {
-        print('Usage: protein search|get|sequence ...', 'warn');
+        print('Usage: protein search|get ...', 'warn');
       }
     }
 
@@ -717,7 +921,7 @@
         if (!q) { print('Usage: organism search <query>', 'warn'); return; }
         const data = await api('GET', `/api/organisms/search?q=${encodeURIComponent(q)}`);
         if (flags.json) { printJson(data); return; }
-        printTable(data, ['tax_id', 'scientific_name', 'common_name']);
+        printTable(data, ['tax_id', 'scientific_name', 'common_name'], null, 'tax_id');
       } else if (verb === 'get') {
         if (!args[1]) { print('Usage: organism get <tax_id>', 'warn'); return; }
         const data = await api('GET', `/api/organisms/${args[1]}`);
@@ -743,13 +947,23 @@
     }
 
     async function handleOptimize(args, flags) {
-      const ref = args[0];
-      const organism = flags.organism || args[1];
-      if (!ref || !organism) {
-        print('Usage: optimize <name|accession> <tax_id>', 'warn');
+      let refs, organism;
+      if (flags.organism) {
+        organism = flags.organism;
+        refs = args.slice();
+      } else if (args.length >= 2) {
+        organism = args[args.length - 1];
+        refs = args.slice(0, -1);
+      } else {
+        refs = args.slice();
+        organism = undefined;
+      }
+
+      if (refs.length === 0 || !organism) {
+        print('Usage: optimize <name|accession> [<name|accession> ...] <tax_id>', 'warn');
         print('');
         print('Required:', 'info');
-        print('  <name|accession>     Workspace name or UniProt accession (e.g. P04637)');
+        print('  <name|accession>     Workspace name(s) or UniProt accession(s) (e.g. P04637)');
         print('  <tax_id>             Target organism tax ID (e.g. 9606=human, 4932=yeast)');
         print('                       Also accepts --organism=<tax_id>');
         print('');
@@ -763,87 +977,101 @@
         print('  --avoid=<sites>      Restriction sites to avoid, comma-separated');
         print('                       Common: EcoRI,BamHI,HindIII,NotI,XhoI');
         print('  --allow-repeats      Allow sequence repeats (default: repeats are removed)');
-        print('  --name=<X>           Custom name for result (default: <input>-opt)');
+        print('  --name=<X>           Custom name for result (single protein only; default: <input>-opt)');
         print('  --seq                Print the optimized sequence');
         print('');
         print('Example: optimize P04637 9606 --strategy=frequency --avoid=EcoRI,BamHI', 'dim');
+        print('Example: optimize P68871 P02042 P02100 4932', 'dim');
         return;
       }
 
-      // Resolve the protein sequence
-      let proteinSeq = null;
-      let sourceName = ref;
+      if (flags.name && refs.length > 1) {
+        print('--name can only be used with a single protein.', 'warn');
+        return;
+      }
 
-      const wsObj = wsGet(ref);
-      if (wsObj) {
-        if (wsObj.type !== 'protein') {
-          print(`'${ref}' is a ${wsObj.type} sequence, not a protein. Optimization requires a protein sequence.`, 'error');
-          return;
-        }
-        proteinSeq = wsObj.sequence;
-        print(`Using '${ref}' from workspace (${wsObj.length} aa)`, 'dim');
-      } else {
-        // Try fetching as a protein accession
-        print(`'${ref}' not in workspace. Fetching protein sequence...`, 'dim');
+      const results = [];
+      for (const ref of refs) {
         try {
-          const data = await api('GET', `/api/proteins/${ref}/sequence`);
-          proteinSeq = data.sequence;
-          // Also store the protein in workspace
-          wsStore(ref, {
-            type: 'protein',
-            sequence: data.sequence,
-            length: data.sequence.length,
-            source: data.source || 'uniprot',
-            label: data.name || ref,
-            accession: data.accession || ref,
-          });
-          print(`Fetched and saved protein as '${ref}' (${data.sequence.length} aa)`, 'success');
+          let proteinSeq = null;
+          const wsObj = wsGet(ref);
+          if (wsObj) {
+            if (wsObj.type !== 'protein') {
+              throw new Error(`'${ref}' is a ${wsObj.type} sequence, not a protein. Optimization requires a protein sequence.`);
+            }
+            proteinSeq = wsObj.sequence;
+            if (!flags.json) print(`Using '${ref}' from workspace (${wsObj.length} aa)`, 'dim');
+          } else {
+            if (!flags.json) print(`'${ref}' not in workspace. Fetching protein sequence...`, 'dim');
+            let pdata;
+            try {
+              pdata = await api('GET', `/api/proteins/${ref}/sequence`);
+            } catch (e) {
+              throw new Error(`Could not fetch protein '${ref}': ${e.message}`);
+            }
+            proteinSeq = pdata.sequence;
+            wsStore(ref, {
+              type: 'protein',
+              sequence: pdata.sequence,
+              length: pdata.sequence.length,
+              source: pdata.source || 'uniprot',
+              label: pdata.name || ref,
+              accession: pdata.accession || ref,
+            });
+            if (!flags.json) print(`Fetched and saved protein as '${ref}' (${pdata.sequence.length} aa)`, 'success');
+          }
+
+          const body = {
+            sequence: proteinSeq,
+            organism_tax_id: parseInt(organism),
+            strategy: flags.strategy || 'frequency',
+            avoid_restriction_sites: flags.avoid ? flags.avoid.split(',') : [],
+            avoid_repeats: flags['allow-repeats'] !== undefined ? false : true,
+          };
+          if (flags['gc-min']) body.target_gc_min = parseFloat(flags['gc-min']);
+          if (flags['gc-max']) body.target_gc_max = parseFloat(flags['gc-max']);
+
+          if (!flags.json) print(refs.length > 1 ? `Optimizing '${ref}'...` : 'Optimizing...', 'dim');
+          const data = await api('POST', '/api/optimization/optimize', body);
+
+          const resultName = (refs.length === 1 && flags.name) ? flags.name : `${ref}-opt`;
+          const optSeq = data.optimized_sequence || '';
+          const optObj = {
+            type: 'dna',
+            sequence: optSeq,
+            length: optSeq.length,
+            source: 'optimized',
+            label: `${ref} optimized for ${organism}`,
+            cai_before: data.cai_before,
+            cai_after: data.cai_after,
+            gc_content: data.gc_content,
+            job_id: data.job_id,
+          };
+          wsStore(resultName, optObj);
+          results.push({ ref, resultName, optObj, data, ok: true });
+
+          if (!flags.json) {
+            let summary = `Saved as '${resultName}' (${optSeq.length} bp`;
+            if (data.cai_before != null) summary += `, CAI: ${data.cai_before} → ${data.cai_after}`;
+            if (data.gc_content != null) summary += `, GC: ${(data.gc_content * 100).toFixed(1)}%`;
+            summary += ')';
+            print(summary, 'success');
+            if (flags.seq && optSeq) {
+              print('');
+              printCodons(optSeq);
+              print('');
+            }
+          }
         } catch (e) {
-          print(`Could not fetch protein '${ref}': ${e.message}`, 'error');
-          print('Provide a workspace name or valid protein accession.', 'dim');
-          return;
+          results.push({ ref, ok: false, error: e.message });
+          if (!flags.json) print(`Failed '${ref}': ${e.message}`, 'error');
         }
       }
 
-      const body = {
-        sequence: proteinSeq,
-        organism_tax_id: parseInt(organism),
-        strategy: flags.strategy || 'frequency',
-        avoid_restriction_sites: flags.avoid ? flags.avoid.split(',') : [],
-        avoid_repeats: flags['allow-repeats'] !== undefined ? false : true,
-      };
-      if (flags['gc-min']) body.target_gc_min = parseFloat(flags['gc-min']);
-      if (flags['gc-max']) body.target_gc_max = parseFloat(flags['gc-max']);
-
-      print('Optimizing...', 'dim');
-      const data = await api('POST', '/api/optimization/optimize', body);
-
-      const resultName = flags.name || `${sourceName}-opt`;
-      const optSeq = data.optimized_sequence || '';
-      const optObj = {
-        type: 'dna',
-        sequence: optSeq,
-        length: optSeq.length,
-        source: 'optimized',
-        label: `${sourceName} optimized for ${organism}`,
-        cai_before: data.cai_before,
-        cai_after: data.cai_after,
-        gc_content: data.gc_content,
-        job_id: data.job_id,
-      };
-      wsStore(resultName, optObj);
-
-      if (flags.json) { printJson({ workspace_name: resultName, ...optObj, ...data }); return; }
-
-      let summary = `Saved as '${resultName}' (${optSeq.length} bp`;
-      if (data.cai_before != null) summary += `, CAI: ${data.cai_before} → ${data.cai_after}`;
-      if (data.gc_content != null) summary += `, GC: ${(data.gc_content * 100).toFixed(1)}%`;
-      summary += ')';
-      print(summary, 'success');
-
-      if (flags.seq && optSeq) {
-        print('');
-        printCodons(optSeq);
+      if (flags.json) {
+        printJson(results.map(r => r.ok
+          ? { workspace_name: r.resultName, ...r.optObj, ...r.data }
+          : { ref: r.ref, error: r.error }));
       }
     }
 
@@ -902,7 +1130,7 @@
         if (flags.json) { printJson(data); return; }
         print(`Found ${data.total} promoter(s)`, 'info');
         if (data.message) print(data.message, 'warn');
-        printTable(data.promoters, ['id', 'name', 'organism', 'strength', 'description']);
+        printTable(data.promoters, ['id', 'name', 'organism', 'strength', 'description'], null, 'id');
       } else if (verb === 'get') {
         if (!args[1]) { print('Usage: promoter get <promoter_id> [--name=X]', 'warn'); return; }
         const data = await api('GET', `/api/regulatory/promoters/${args[1]}`);
@@ -936,7 +1164,7 @@
         if (flags.json) { printJson(data); return; }
         print(`Found ${data.total} terminator(s)`, 'info');
         if (data.message) print(data.message, 'warn');
-        printTable(data.terminators, ['id', 'name', 'organism', 'efficiency', 'mechanism']);
+        printTable(data.terminators, ['id', 'name', 'organism', 'efficiency', 'mechanism'], null, 'id');
       } else if (verb === 'get') {
         if (!args[1]) { print('Usage: terminator get <terminator_id> [--name=X]', 'warn'); return; }
         const data = await api('GET', `/api/regulatory/terminators/${args[1]}`);
@@ -961,6 +1189,74 @@
       }
     }
 
+    async function handleMisc(args, flags) {
+      const verb = args[0];
+      if (verb === 'search') {
+        const q = args.slice(1).join(' ');
+        const params = [];
+        if (q) params.push(`q=${encodeURIComponent(q)}`);
+        if (flags.type) params.push(`sequence_type=${encodeURIComponent(flags.type)}`);
+        const path = `/api/misc/search${params.length ? '?' + params.join('&') : ''}`;
+        const data = await api('GET', path);
+        if (flags.json) { printJson(data); return; }
+        print(`Found ${data.total} sequence(s)`, 'info');
+        if (data.message) print(data.message, 'warn');
+        const truncate = (s, n) => (s && s.length > n) ? s.slice(0, n - 1) + '…' : (s || '');
+        const rows = (data.items || []).map(i => ({
+          name: i.name,
+          seq_type: i.sequence_type,
+          category: truncate(i.category, 24),
+          length: i.sequence_type === 'protein' ? `${i.length} aa` : `${i.length} bp`,
+          notes: truncate(i.notes, 50),
+        }));
+        printTable(rows, ['name', 'seq_type', 'category', 'length', 'notes'], null, 'name');
+      } else if (verb === 'get') {
+        const ids = args.slice(1);
+        if (ids.length === 0) {
+          print('Usage: misc get <id_or_name> [<id_or_name> ...] [--name=X]', 'warn');
+          return;
+        }
+        if (flags.name && ids.length > 1) {
+          print('--name can only be used with a single misc sequence.', 'warn');
+          return;
+        }
+        const results = [];
+        for (const mid of ids) {
+          try {
+            const data = await api('GET', `/api/misc/${encodeURIComponent(mid)}`);
+            const wsType = data.sequence_type === 'protein' ? 'protein' : 'dna';
+            const name = (ids.length === 1 && flags.name) ? flags.name : (data.name || mid);
+            const wsObj = {
+              type: wsType,
+              sequence: data.sequence || '',
+              length: data.length,
+              source: 'misc-db',
+              label: data.notes || data.category || data.name,
+              category: data.category || null,
+              subtype: data.subtype || null,
+            };
+            wsStore(name, wsObj);
+            results.push({ mid, name, wsObj, data, ok: true });
+            if (!flags.json) {
+              const unit = wsType === 'protein' ? 'aa' : 'bp';
+              const labelPart = data.notes ? `, ${data.notes}` : (data.category ? `, ${data.category}` : '');
+              print(`Saved as '${name}' (${data.length} ${unit}${labelPart})`, 'success');
+            }
+          } catch (e) {
+            results.push({ mid, ok: false, error: e.message });
+            if (!flags.json) print(`Failed '${mid}': ${e.message}`, 'error');
+          }
+        }
+        if (flags.json) {
+          printJson(results.map(r => r.ok
+            ? { workspace_name: r.name, ...r.wsObj }
+            : { id: r.mid, error: r.error }));
+        }
+      } else {
+        print('Usage: misc search|get ...', 'warn');
+      }
+    }
+
     async function handleProject(args, flags) {
       const verb = args[0];
       if (verb === 'list') {
@@ -977,6 +1273,7 @@
         const body = { name, description: flags.desc || null };
         const data = await api('POST', '/api/projects/', body);
         state.activeProject = { id: data.id, name: data.name };
+        state.activeConstruct = null;
         refreshUI();
         if (flags.json) { printJson(data); return; }
         print(`Created project: ${data.id}`, 'success');
@@ -1157,6 +1454,29 @@
         const startPos = flags.position != null ? parseInt(flags.position) : existingElements.length;
         const count = wsObjs.length;
 
+        // Block mixing protein and DNA sequences within a single construct.
+        const detectSeqType = (seq) => {
+          const clean = (seq || '').toUpperCase().replace(/\s+/g, '');
+          if (!clean) return 'unknown';
+          return /^[ATCGN]+$/.test(clean) ? 'dna' : 'protein';
+        };
+        const newTypes = wsObjs.map(({ obj }) => (obj.type === 'protein' ? 'protein' : detectSeqType(obj.sequence)));
+        const existingTypes = existingElements.map(el => detectSeqType(el.sequence));
+        const allTypes = new Set([...newTypes, ...existingTypes].filter(t => t === 'dna' || t === 'protein'));
+        if (allTypes.has('dna') && allTypes.has('protein')) {
+          const newProtein = wsObjs.filter((_, i) => newTypes[i] === 'protein').map(o => o.name);
+          const newDna = wsObjs.filter((_, i) => newTypes[i] === 'dna').map(o => o.name);
+          const existingHasProtein = existingTypes.includes('protein');
+          const existingHasDna = existingTypes.includes('dna');
+          print('Cannot add: construct would contain both protein and DNA sequences.', 'warn');
+          if (existingHasProtein || existingHasDna) {
+            print(`  Existing construct contains: ${existingHasProtein ? 'protein' : ''}${existingHasProtein && existingHasDna ? ' + ' : ''}${existingHasDna ? 'DNA' : ''}`, 'dim');
+          }
+          if (newProtein.length) print(`  New protein: ${newProtein.join(', ')}`, 'dim');
+          if (newDna.length) print(`  New DNA: ${newDna.join(', ')}`, 'dim');
+          return;
+        }
+
         // Shift existing elements at/after the insertion point by `count`
         const updatedElements = existingElements.map(el => ({
           element_type: el.element_type,
@@ -1315,33 +1635,17 @@
         if (flags.json) { printJson(data); return; }
         print(`Sequence length: ${data.sequence_length} bp`, 'info');
         print('');
-        print('Enzymes:', 'info');
-        printTable(
-          data.enzymes.map(e => ({
-            name: e.name,
-            site: e.site,
-            overhang: e.overhang,
-            cuts: e.cut_count,
-            positions: e.cut_positions.join(', ') || '—',
-            features: e.feature_hits.join(', ') || '—',
-          })),
-          ['name', 'site', 'overhang', 'cuts', 'positions', 'features']
-        );
-        print('');
-        print(`Fragments (${data.fragments.length}):`, 'info');
-        printTable(
-          data.fragments.map(f => ({
-            '#': f.index,
-            start: f.start,
-            end: f.end,
-            length: f.length,
-            sequence: f.sequence,
-          })),
-          ['#', 'start', 'end', 'length', 'sequence']
-        );
+        printDigestDiagram(data.enzymes, data.annotations, data.sequence_length);
         if (data.warnings && data.warnings.length) {
           print('');
           data.warnings.forEach(w => print('Warning: ' + w, 'warn'));
+        }
+        if (flags.seq && data.full_sequence) {
+          const allCuts = Array.from(new Set(
+            data.enzymes.flatMap(e => e.cut_positions || [])
+          )).sort((a, b) => a - b);
+          print('');
+          printCodons(data.full_sequence, 'Assembled sequence', data.annotations, allCuts);
         }
       } else {
         print('Usage: construct list|create|use|add|get|rename|element|delete|assemble|export|digest ...', 'warn');
@@ -1410,7 +1714,54 @@
         length: `${obj.length} ${wsUnit(obj.type)}`,
         label: obj.label || '',
       }));
-      printTable(rows, ['name', 'type', 'length', 'label']);
+      printWsTable(rows);
+    }
+
+    function appendWsToCmd(name) {
+      const current = cmdEl.value;
+      const needsSpace = current.length > 0 && !current.endsWith(' ');
+      cmdEl.value = current + (needsSpace ? ' ' : '') + name + ' ';
+      cmdEl.focus();
+      cmdEl.setSelectionRange(cmdEl.value.length, cmdEl.value.length);
+    }
+
+    function printWsTable(rows) {
+      const columns = ['name', 'type', 'length', 'label'];
+      const widths = {};
+      columns.forEach(c => widths[c] = c.length);
+      rows.forEach(r => columns.forEach(c => {
+        const val = String(r[c] ?? '');
+        if (val.length > widths[c]) widths[c] = Math.min(val.length, 60);
+      }));
+      const insLabel = '';
+      const insWidth = 3;
+      const header = insLabel.padEnd(insWidth) + '  ' + columns.map(c => c.padEnd(widths[c])).join('  ');
+      const sep = '─'.repeat(insWidth) + '──' + columns.map(c => '─'.repeat(widths[c])).join('──');
+      print(header, 'bold');
+      print(sep, 'dim');
+      rows.forEach(r => {
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'line';
+        const cell = document.createElement('span');
+        cell.className = 'ws-insert-cell';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ws-insert-btn';
+        btn.textContent = '+';
+        btn.setAttribute('aria-label', `Insert ${r.name}`);
+        btn.title = `Insert ${r.name}`;
+        btn.addEventListener('click', () => appendWsToCmd(r.name));
+        cell.appendChild(btn);
+        rowDiv.appendChild(cell);
+        rowDiv.appendChild(document.createTextNode('  '));
+        columns.forEach((c, i) => {
+          if (i > 0) rowDiv.appendChild(document.createTextNode('  '));
+          rowDiv.appendChild(document.createTextNode(String(r[c] ?? '').padEnd(widths[c])));
+        });
+        termEl.appendChild(rowDiv);
+      });
+      termEl.scrollTop = termEl.scrollHeight;
+      print('Tip: click + to append the name to the command line.', 'dim');
     }
 
     function handleShow(args, flags) {
@@ -1442,6 +1793,140 @@
       } else {
         print(`${name} (${obj.length} ${wsUnit(obj.type)}, ${obj.type}):`, 'info');
         if (obj.source === 'optimized') { printCodons(obj.sequence); } else { printSeq(obj.sequence); }
+      }
+    }
+
+    function reverseComplementDNA(seq) {
+      const map = { A: 'T', T: 'A', C: 'G', G: 'C', N: 'N', a: 't', t: 'a', c: 'g', g: 'c', n: 'n' };
+      let out = '';
+      for (let i = seq.length - 1; i >= 0; i--) {
+        out += map[seq[i]] || seq[i];
+      }
+      return out;
+    }
+
+    function countOccurrences(haystack, needle) {
+      if (!needle) return 0;
+      let count = 0;
+      let idx = haystack.indexOf(needle);
+      while (idx !== -1) {
+        count++;
+        idx = haystack.indexOf(needle, idx + 1);
+      }
+      return count;
+    }
+
+    function findSlice(source, startMarker, endMarker) {
+      const upperSrc = source.toUpperCase();
+      const upStart = startMarker.toUpperCase();
+      const upEnd = endMarker.toUpperCase();
+      const startIdx = upperSrc.indexOf(upStart);
+      if (startIdx === -1) return { ok: false, reason: 'start' };
+      const endIdx = upperSrc.indexOf(upEnd, startIdx);
+      if (endIdx === -1) return { ok: false, reason: 'end' };
+      return {
+        ok: true,
+        startIdx,
+        endIdx,
+        sequence: source.substring(startIdx, endIdx + upEnd.length),
+        startHits: countOccurrences(upperSrc, upStart),
+        endHits: countOccurrences(upperSrc, upEnd),
+      };
+    }
+
+    function handleSlice(args, flags) {
+      const name = args[0];
+      if (!name) {
+        print('Usage: slice <name> <START>...<END> [--name=X] [--rc]', 'warn');
+        print('       slice <name> --from=ATC --to=GCC [--name=X] [--rc]', 'warn');
+        return;
+      }
+      const obj = wsGet(name);
+      if (!obj) {
+        print(`'${name}' not found in workspace. Use 'ws' to list available objects.`, 'error');
+        return;
+      }
+
+      let startMarker, endMarker;
+      if (flags.from && flags.to) {
+        startMarker = String(flags.from);
+        endMarker = String(flags.to);
+      } else if (args[1] && args[1].includes('...')) {
+        const parts = args[1].split('...');
+        if (parts.length !== 2 || !parts[0] || !parts[1]) {
+          print('Invalid marker format. Use START...END (e.g. ATC...GCC).', 'error');
+          return;
+        }
+        startMarker = parts[0];
+        endMarker = parts[1];
+      } else {
+        print('Missing markers. Use START...END or --from=ATC --to=GCC.', 'warn');
+        return;
+      }
+
+      const isProtein = obj.type === 'protein';
+      if (flags.rc && isProtein) {
+        print('--rc is only valid for DNA sequences.', 'error');
+        return;
+      }
+
+      let result = findSlice(obj.sequence, startMarker, endMarker);
+      let strand = '+';
+      if (!result.ok && flags.rc && !isProtein) {
+        const rc = reverseComplementDNA(obj.sequence);
+        const rcResult = findSlice(rc, startMarker, endMarker);
+        if (rcResult.ok) {
+          result = rcResult;
+          strand = '-';
+        }
+      }
+
+      if (!result.ok) {
+        if (result.reason === 'start') {
+          print(`Start marker '${startMarker}' not found in '${name}'${flags.rc ? ' (forward or reverse strand)' : ''}.`, 'error');
+        } else {
+          print(`End marker '${endMarker}' not found after start in '${name}'${flags.rc ? ' (forward or reverse strand)' : ''}.`, 'error');
+        }
+        return;
+      }
+
+      const oneBasedStart = result.startIdx + 1;
+      const oneBasedEnd = result.endIdx + endMarker.length;
+      const unit = wsUnit(obj.type);
+
+      if (flags.json) {
+        printJson({
+          source: name,
+          start: oneBasedStart,
+          end: oneBasedEnd,
+          length: result.sequence.length,
+          strand,
+          sequence: result.sequence,
+          saved_as: flags.name || null,
+        });
+      } else {
+        if (result.startHits > 1 || result.endHits > 1) {
+          print(`Ambiguous markers: start matched ${result.startHits}×, end matched ${result.endHits}×. Using first pair.`, 'warn');
+        }
+        const strandLabel = strand === '-' ? ' (reverse strand)' : '';
+        print(`${name} [${oneBasedStart}..${oneBasedEnd}]${strandLabel} — ${result.sequence.length} ${unit}:`, 'info');
+        if (obj.source === 'optimized') { printCodons(result.sequence); } else { printSeq(result.sequence); }
+      }
+
+      if (flags.name) {
+        if (wsGet(flags.name)) {
+          print(`'${flags.name}' already exists in workspace. Remove it first or choose a different name.`, 'error');
+          return;
+        }
+        const sliced = {
+          type: obj.type,
+          sequence: result.sequence,
+          length: result.sequence.length,
+          source: 'slice',
+          label: `Slice of ${name} [${oneBasedStart}..${oneBasedEnd}]${strand === '-' ? ' rc' : ''}`,
+        };
+        wsStore(flags.name, sliced);
+        if (!flags.json) print(`Saved as '${flags.name}' (${result.sequence.length} ${unit}).`, 'success');
       }
     }
 
@@ -1601,12 +2086,14 @@
       kozak: handleKozak,
       promoter: handlePromoter,
       terminator: handleTerminator,
+      misc: handleMisc,
       project: handleProject,
       construct: handleConstruct,
       cd: handleCd,
       ws: (a, f) => handleWorkspace(a, f),
       workspace: (a, f) => handleWorkspace(a, f),
       show: handleShow,
+      slice: handleSlice,
       rm: handleRm,
       rename: handleRename,
       status: (a, f) => {

@@ -93,8 +93,10 @@ def digest(
 
     return {
         "sequence_length": len(sequence),
+        "full_sequence": sequence,
         "enzymes": enzyme_infos,
         "fragments": fragments,
+        "annotations": annotations,
         "warnings": warnings,
     }
 

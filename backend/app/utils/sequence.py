@@ -3,7 +3,8 @@
 from Bio.Seq import Seq
 
 VALID_DNA = set("ATCGatcg")
-VALID_PROTEIN = set("ACDEFGHIKLMNPQRSTVWYacdefghiklmnpqrstvwy*")
+# 20 standard + stop + IUPAC ambiguity codes (B=Asx, X=any, Z=Glx, U=Sec, O=Pyl).
+VALID_PROTEIN = set("ACDEFGHIKLMNPQRSTVWYBXZUOacdefghiklmnpqrstvwybxzuo*")
 
 COMPLEMENT = str.maketrans("ATCGatcg", "TAGCtagc")
 

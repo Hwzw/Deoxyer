@@ -11,15 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY backend/pyproject.toml backend/uv.lock* /app/backend/
-WORKDIR /app/backend
-RUN pip install --upgrade pip && pip install -e .
-
-WORKDIR /app
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
 
 WORKDIR /app/backend
+RUN pip install --upgrade pip && pip install -e .
 
 EXPOSE 8000
 
